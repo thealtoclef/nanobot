@@ -28,6 +28,20 @@ class ChannelsConfig(Base):
     send_max_retries: int = Field(default=3, ge=0, le=10)  # Max delivery attempts (initial send included)
 
 
+class FallbackModelConfig(Base):
+    """Configuration for a single fallback model.
+
+    All fields except ``model`` are optional — omitted fields inherit
+    from the parent ``AgentDefaults``.
+    """
+
+    model: str  # required
+    provider: str = "auto"  # same semantics as AgentDefaults.provider
+    max_tokens: int | None = None
+    temperature: float | None = None
+    reasoning_effort: str | None = None
+
+
 class AgentDefaults(Base):
     """Default agent configuration."""
 
@@ -45,6 +59,7 @@ class AgentDefaults(Base):
     provider_retry_mode: Literal["standard", "persistent"] = "standard"
     reasoning_effort: str | None = None  # low / medium / high - enables LLM thinking mode
     timezone: str = "UTC"  # IANA timezone, e.g. "Asia/Shanghai", "America/New_York"
+    fallback_models: list[FallbackModelConfig] = Field(default_factory=list)
 
 
 class AgentsConfig(Base):

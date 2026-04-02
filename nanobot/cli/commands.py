@@ -445,6 +445,56 @@ def _make_provider(config: Config):
     return provider
 
 
+def _wrap_with_fallback(provider, config: Config):
+    """Wrap *provider* with fallback models if configured.
+
+    Non-invasive: reuses ``_make_provider`` by temporarily swapping
+    ``config.agents.defaults`` fields, then restoring them.
+    """
+    from loguru import logger
+
+    fallback_models = config.agents.defaults.fallback_models
+    if not fallback_models:
+        return provider
+
+    primary_model = config.agents.defaults.model
+    defaults = config.agents.defaults
+
+    # Save originals
+    orig_model = defaults.model
+    orig_provider = defaults.provider
+    orig_max_tokens = defaults.max_tokens
+    orig_temp = defaults.temperature
+    orig_reasoning = defaults.reasoning_effort
+
+    fallbacks: list[tuple] = []
+    for fb in fallback_models:
+        # Temporarily swap config to build this fallback's provider
+        defaults.model = fb.model
+        defaults.provider = fb.provider
+        defaults.max_tokens = fb.max_tokens if fb.max_tokens is not None else orig_max_tokens
+        defaults.temperature = fb.temperature if fb.temperature is not None else orig_temp
+        defaults.reasoning_effort = fb.reasoning_effort if fb.reasoning_effort is not None else orig_reasoning
+        try:
+            fb_provider = _make_provider(config)
+            fallbacks.append((fb_provider, fb.model))
+        except SystemExit:
+            logger.warning("Skipping fallback model {} (configuration error)", fb.model)
+
+    # Restore originals
+    defaults.model = orig_model
+    defaults.provider = orig_provider
+    defaults.max_tokens = orig_max_tokens
+    defaults.temperature = orig_temp
+    defaults.reasoning_effort = orig_reasoning
+
+    if not fallbacks:
+        return provider
+
+    from nanobot.providers.fallback import FallbackProvider
+    return FallbackProvider(provider, primary_model, fallbacks)
+
+
 def _load_runtime_config(config: str | None = None, workspace: str | None = None) -> Config:
     """Load config and optionally override the active workspace."""
     from nanobot.config.loader import load_config, set_config_path
@@ -533,7 +583,7 @@ def serve(
     timeout = timeout if timeout is not None else api_cfg.timeout
     sync_workspace_templates(runtime_config.workspace_path)
     bus = MessageBus()
-    provider = _make_provider(runtime_config)
+    provider = _wrap_with_fallback(_make_provider(runtime_config), runtime_config)
     session_manager = SessionManager(runtime_config.workspace_path)
     agent_loop = AgentLoop(
         bus=bus,
@@ -613,7 +663,7 @@ def gateway(
     console.print(f"{__logo__} Starting nanobot gateway version {__version__} on port {port}...")
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
-    provider = _make_provider(config)
+    provider = _wrap_with_fallback(_make_provider(config), config)
     session_manager = SessionManager(config.workspace_path)
 
     # Preserve existing single-workspace installs, but keep custom workspaces clean.
@@ -819,7 +869,7 @@ def agent(
     sync_workspace_templates(config.workspace_path)
 
     bus = MessageBus()
-    provider = _make_provider(config)
+    provider = _wrap_with_fallback(_make_provider(config), config)
 
     # Preserve existing single-workspace installs, but keep custom workspaces clean.
     if is_default_workspace(config.workspace_path):
