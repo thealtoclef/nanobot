@@ -1,0 +1,6 @@
+- [Observability Architecture](observability_arch.md) — PydanticAI OTEL auto + manual platform spans + Langfuse via OTEL + stdlib logging. No Logfire/loguru/Prometheus.
+- [PydanticAI Full Refactor](pydantic_ai.md) — Full refactor to PydanticAI, no backward compat. Pydantic BaseModel everywhere, no dataclasses.
+- [No Prometheus/Logfire/loguru](no_prometheus.md) — OTEL only for infra, stdlib logging, Langfuse for LLM. No closed-source deps.
+- [No API Auth](no_api_auth.md) — IaC approach, no web UI, no API to protect
+- [Blueprint Priorities](blueprint_priorities.md) — Phase 0 is full PydanticAI refactor. Then security (LLM Guard, detect-secrets), core, operations.
+- [Modular Architecture](modular_arch.md) — Providers, channels, tools all optional extras. Instrumented base classes handle all observability.
