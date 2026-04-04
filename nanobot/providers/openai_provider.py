@@ -101,7 +101,7 @@ def _uses_openrouter_attribution(spec: "ProviderSpec | None", api_base: str | No
     return bool(api_base and "openrouter" in api_base.lower())
 
 
-class OpenAICompatProvider(LLMProvider):
+class OpenAIProvider(LLMProvider):
     """Unified provider for all OpenAI-compatible APIs.
 
     Receives a resolved ``ProviderSpec`` from the caller — no internal

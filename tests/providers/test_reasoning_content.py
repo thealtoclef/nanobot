@@ -1,4 +1,4 @@
-"""Tests for reasoning_content extraction in OpenAICompatProvider.
+"""Tests for reasoning_content extraction in OpenAIProvider.
 
 Covers non-streaming (_parse) and streaming (_parse_chunks) paths for
 providers that return a reasoning_content field (e.g. MiMo, DeepSeek-R1).
@@ -7,7 +7,7 @@ providers that return a reasoning_content field (e.g. MiMo, DeepSeek-R1).
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from nanobot.providers.openai_compat_provider import OpenAICompatProvider
+from nanobot.providers.openai_provider import OpenAIProvider
 
 
 # ── _parse: non-streaming ─────────────────────────────────────────────────
@@ -15,8 +15,8 @@ from nanobot.providers.openai_compat_provider import OpenAICompatProvider
 
 def test_parse_dict_extracts_reasoning_content() -> None:
     """reasoning_content at message level is surfaced in LLMResponse."""
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = OpenAICompatProvider()
+    with patch("nanobot.providers.openai_provider.AsyncOpenAI"):
+        provider = OpenAIProvider()
 
     response = {
         "choices": [{
@@ -37,8 +37,8 @@ def test_parse_dict_extracts_reasoning_content() -> None:
 
 def test_parse_dict_reasoning_content_none_when_absent() -> None:
     """reasoning_content is None when the response doesn't include it."""
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = OpenAICompatProvider()
+    with patch("nanobot.providers.openai_provider.AsyncOpenAI"):
+        provider = OpenAIProvider()
 
     response = {
         "choices": [{
@@ -78,7 +78,7 @@ def test_parse_chunks_dict_accumulates_reasoning_content() -> None:
         },
     ]
 
-    result = OpenAICompatProvider._parse_chunks(chunks)
+    result = OpenAIProvider._parse_chunks(chunks)
 
     assert result.content == "answer"
     assert result.reasoning_content == "Step 1. Step 2."
@@ -90,7 +90,7 @@ def test_parse_chunks_dict_reasoning_content_none_when_absent() -> None:
         {"choices": [{"finish_reason": "stop", "delta": {"content": "hi"}}]},
     ]
 
-    result = OpenAICompatProvider._parse_chunks(chunks)
+    result = OpenAIProvider._parse_chunks(chunks)
 
     assert result.content == "hi"
     assert result.reasoning_content is None
@@ -113,7 +113,7 @@ def test_parse_chunks_sdk_accumulates_reasoning_content() -> None:
         _make_reasoning_chunk(None, "result", "stop"),
     ]
 
-    result = OpenAICompatProvider._parse_chunks(chunks)
+    result = OpenAIProvider._parse_chunks(chunks)
 
     assert result.content == "result"
     assert result.reasoning_content == "Think… Done."
@@ -123,6 +123,6 @@ def test_parse_chunks_sdk_reasoning_content_none_when_absent() -> None:
     """reasoning_content is None when SDK deltas carry no reasoning_content."""
     chunks = [_make_reasoning_chunk(None, "hello", "stop")]
 
-    result = OpenAICompatProvider._parse_chunks(chunks)
+    result = OpenAIProvider._parse_chunks(chunks)
 
     assert result.reasoning_content is None

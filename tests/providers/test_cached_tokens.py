@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nanobot.providers.openai_compat_provider import OpenAICompatProvider
+from nanobot.providers.openai_provider import OpenAIProvider
 
 
 class FakeUsage:
@@ -28,7 +28,7 @@ class _FakeSpec:
 
 def _provider():
     from unittest.mock import MagicMock
-    p = OpenAICompatProvider.__new__(OpenAICompatProvider)
+    p = OpenAIProvider.__new__(OpenAIProvider)
     p.client = MagicMock()
     p.spec = _FakeSpec()
     return p

@@ -13,7 +13,7 @@ from nanobot.nanobot import Nanobot, RunResult
 
 def _write_config(tmp_path: Path, overrides: dict | None = None) -> Path:
     data = {
-        "providers": {"openrouter": {"apiKey": "sk-test-key"}},
+        "providers": {"openai": {"apiKey": "sk-test-key"}},
         "agents": {"defaults": {"model": "openai/gpt-4.1"}},
     }
     if overrides:
@@ -123,28 +123,6 @@ def test_workspace_override(tmp_path):
 
     bot = Nanobot.from_config(config_path, workspace=custom_ws)
     assert bot._loop.workspace == custom_ws
-
-
-def test_sdk_make_provider_uses_github_copilot_backend():
-    from nanobot.config.schema import Config
-    from nanobot.nanobot import _make_provider
-
-    config = Config.model_validate(
-        {
-            "agents": {
-                "defaults": {
-                    "provider": "github-copilot",
-                    "model": "github-copilot/gpt-4.1",
-                }
-            }
-        }
-    )
-
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = _make_provider(config)
-
-    assert provider.__class__.__name__ == "GitHubCopilotProvider"
-
 
 @pytest.mark.asyncio
 async def test_run_custom_session_key(tmp_path):

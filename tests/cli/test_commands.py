@@ -9,7 +9,6 @@ from typer.testing import CliRunner
 from nanobot.bus.events import OutboundMessage
 from nanobot.cli.commands import _make_provider, app
 from nanobot.config.schema import Config
-from nanobot.providers.openai_codex_provider import _strip_model_prefix
 from nanobot.providers.registry import find_by_name
 
 runner = CliRunner()
@@ -199,204 +198,21 @@ def test_onboard_wizard_preserves_explicit_config_in_next_steps(tmp_path, monkey
     assert f"nanobot gateway --config {resolved_config}" in compact_output
 
 
-def test_config_matches_github_copilot_codex_with_hyphen_prefix():
-    config = Config()
-    config.agents.defaults.model = "github-copilot/gpt-5.3-codex"
+def test_openai_provider_passes_model_through():
+    from nanobot.providers.openai_provider import OpenAIProvider
 
-    assert config.get_provider_name() == "github_copilot"
+    with patch("nanobot.providers.openai_provider.AsyncOpenAI"):
+        provider = OpenAIProvider(default_model="gpt-4o")
 
-
-def test_config_matches_openai_codex_with_hyphen_prefix():
-    config = Config()
-    config.agents.defaults.model = "openai-codex/gpt-5.1-codex"
-
-    assert config.get_provider_name() == "openai_codex"
+    assert provider.get_default_model() == "gpt-4o"
 
 
-def test_config_dump_excludes_oauth_provider_blocks():
-    config = Config()
-
-    providers = config.model_dump(by_alias=True)["providers"]
-
-    assert "openaiCodex" not in providers
-    assert "githubCopilot" not in providers
-
-
-def test_config_matches_explicit_ollama_prefix_without_api_key():
-    config = Config()
-    config.agents.defaults.model = "ollama/llama3.2"
-
-    assert config.get_provider_name() == "ollama"
-    assert config.get_api_base() == "http://localhost:11434/v1"
-
-
-def test_config_explicit_ollama_provider_uses_default_localhost_api_base():
-    config = Config()
-    config.agents.defaults.provider = "ollama"
-    config.agents.defaults.model = "llama3.2"
-
-    assert config.get_provider_name() == "ollama"
-    assert config.get_api_base() == "http://localhost:11434/v1"
-
-
-def test_config_accepts_camel_case_explicit_provider_name_for_coding_plan():
+def test_make_provider_passes_extra_headers_to_openai_provider():
     config = Config.model_validate(
         {
-            "agents": {
-                "defaults": {
-                    "provider": "volcengineCodingPlan",
-                    "model": "doubao-1-5-pro",
-                }
-            },
+            "agents": {"defaults": {"provider": "openai", "model": "gpt-4o-mini"}},
             "providers": {
-                "volcengineCodingPlan": {
-                    "apiKey": "test-key",
-                }
-            },
-        }
-    )
-
-    assert config.get_provider_name() == "volcengine_coding_plan"
-    assert config.get_api_base() == "https://ark.cn-beijing.volces.com/api/coding/v3"
-
-
-def test_find_by_name_accepts_camel_case_and_hyphen_aliases():
-    assert find_by_name("volcengineCodingPlan") is not None
-    assert find_by_name("volcengineCodingPlan").name == "volcengine_coding_plan"
-    assert find_by_name("github-copilot") is not None
-    assert find_by_name("github-copilot").name == "github_copilot"
-
-
-def test_config_auto_detects_ollama_from_local_api_base():
-    config = Config.model_validate(
-        {
-            "agents": {"defaults": {"provider": "auto", "model": "llama3.2"}},
-            "providers": {"ollama": {"apiBase": "http://localhost:11434/v1"}},
-        }
-    )
-
-    assert config.get_provider_name() == "ollama"
-    assert config.get_api_base() == "http://localhost:11434/v1"
-
-
-def test_config_prefers_ollama_over_vllm_when_both_local_providers_configured():
-    config = Config.model_validate(
-        {
-            "agents": {"defaults": {"provider": "auto", "model": "llama3.2"}},
-            "providers": {
-                "vllm": {"apiBase": "http://localhost:8000"},
-                "ollama": {"apiBase": "http://localhost:11434/v1"},
-            },
-        }
-    )
-
-    assert config.get_provider_name() == "ollama"
-    assert config.get_api_base() == "http://localhost:11434/v1"
-
-
-def test_config_falls_back_to_vllm_when_ollama_not_configured():
-    config = Config.model_validate(
-        {
-            "agents": {"defaults": {"provider": "auto", "model": "llama3.2"}},
-            "providers": {
-                "vllm": {"apiBase": "http://localhost:8000"},
-            },
-        }
-    )
-
-    assert config.get_provider_name() == "vllm"
-    assert config.get_api_base() == "http://localhost:8000"
-
-
-def test_openai_compat_provider_passes_model_through():
-    from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = OpenAICompatProvider(default_model="github-copilot/gpt-5.3-codex")
-
-    assert provider.get_default_model() == "github-copilot/gpt-5.3-codex"
-
-
-def test_make_provider_uses_github_copilot_backend():
-    from nanobot.cli.commands import _make_provider
-    from nanobot.config.schema import Config
-
-    config = Config.model_validate(
-        {
-            "agents": {
-                "defaults": {
-                    "provider": "github-copilot",
-                    "model": "github-copilot/gpt-4.1",
-                }
-            }
-        }
-    )
-
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = _make_provider(config)
-
-    assert provider.__class__.__name__ == "GitHubCopilotProvider"
-
-
-def test_github_copilot_provider_strips_prefixed_model_name():
-    from nanobot.providers.github_copilot_provider import GitHubCopilotProvider
-
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = GitHubCopilotProvider(default_model="github-copilot/gpt-5.1")
-
-    kwargs = provider._build_kwargs(
-        messages=[{"role": "user", "content": "hi"}],
-        tools=None,
-        model="github-copilot/gpt-5.1",
-        max_tokens=16,
-        temperature=0.1,
-        reasoning_effort=None,
-        tool_choice=None,
-    )
-
-    assert kwargs["model"] == "gpt-5.1"
-
-
-@pytest.mark.asyncio
-async def test_github_copilot_provider_refreshes_client_api_key_before_chat():
-    from nanobot.providers.github_copilot_provider import GitHubCopilotProvider
-
-    mock_client = MagicMock()
-    mock_client.api_key = "no-key"
-    mock_client.chat.completions.create = AsyncMock(return_value={
-        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-    })
-
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI", return_value=mock_client):
-        provider = GitHubCopilotProvider(default_model="github-copilot/gpt-5.1")
-
-    provider._get_copilot_access_token = AsyncMock(return_value="copilot-access-token")
-
-    response = await provider.chat(
-        messages=[{"role": "user", "content": "hi"}],
-        model="github-copilot/gpt-5.1",
-        max_tokens=16,
-        temperature=0.1,
-    )
-
-    assert response.content == "ok"
-    assert provider._client.api_key == "copilot-access-token"
-    provider._get_copilot_access_token.assert_awaited_once()
-    mock_client.chat.completions.create.assert_awaited_once()
-
-
-def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
-    assert _strip_model_prefix("openai-codex/gpt-5.1-codex") == "gpt-5.1-codex"
-    assert _strip_model_prefix("openai_codex/gpt-5.1-codex") == "gpt-5.1-codex"
-
-
-def test_make_provider_passes_extra_headers_to_custom_provider():
-    config = Config.model_validate(
-        {
-            "agents": {"defaults": {"provider": "custom", "model": "gpt-4o-mini"}},
-            "providers": {
-                "custom": {
+                "openai": {
                     "apiKey": "test-key",
                     "apiBase": "https://example.com/v1",
                     "extraHeaders": {
@@ -408,7 +224,7 @@ def test_make_provider_passes_extra_headers_to_custom_provider():
         }
     )
 
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI") as mock_async_openai:
+    with patch("nanobot.providers.openai_provider.AsyncOpenAI") as mock_async_openai:
         _make_provider(config)
 
     kwargs = mock_async_openai.call_args.kwargs
