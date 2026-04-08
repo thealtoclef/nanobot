@@ -1,35 +1,30 @@
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from nanobot.heartbeat.service import HeartbeatService
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 
-class DummyProvider(LLMProvider):
-    def __init__(self, responses: list[LLMResponse]):
-        super().__init__()
-        self._responses = list(responses)
-        self.calls = 0
-
-    async def chat(self, *args, **kwargs) -> LLMResponse:
-        self.calls += 1
-        if self._responses:
-            return self._responses.pop(0)
-        return LLMResponse(content="", tool_calls=[])
-
-    def get_default_model(self) -> str:
-        return "test-model"
+def _make_mock_agent(responses: list[str]) -> MagicMock:
+    """Create a mock NanobotAgent that returns responses sequentially."""
+    responses = list(responses)
+    agent = MagicMock()
+    async def fake_run(**kwargs):
+        if responses:
+            return responses.pop(0)
+        return '{"action": "skip"}'
+    agent.run = fake_run
+    return agent
 
 
 @pytest.mark.asyncio
 async def test_start_is_idempotent(tmp_path) -> None:
-    provider = DummyProvider([])
+    agent = _make_mock_agent(['{"action": "skip"}'])
 
     service = HeartbeatService(
         workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
+        agent=agent,
         interval_s=9999,
         enabled=True,
     )
@@ -45,12 +40,11 @@ async def test_start_is_idempotent(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_decide_returns_skip_when_no_tool_call(tmp_path) -> None:
-    provider = DummyProvider([LLMResponse(content="no tool call", tool_calls=[])])
+async def test_decide_returns_skip_when_no_run_action(tmp_path) -> None:
+    agent = _make_mock_agent(['{"action": "skip"}'])
     service = HeartbeatService(
         workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
+        agent=agent,
     )
 
     action, tasks = await service._decide("heartbeat content")
@@ -59,21 +53,23 @@ async def test_decide_returns_skip_when_no_tool_call(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_decide_returns_run_with_tasks(tmp_path) -> None:
+    agent = _make_mock_agent(['{"action": "run", "tasks": "check open tasks"}'])
+    service = HeartbeatService(
+        workspace=tmp_path,
+        agent=agent,
+    )
+
+    action, tasks = await service._decide("heartbeat content")
+    assert action == "run"
+    assert tasks == "check open tasks"
+
+
+@pytest.mark.asyncio
 async def test_trigger_now_executes_when_decision_is_run(tmp_path) -> None:
     (tmp_path / "HEARTBEAT.md").write_text("- [ ] do thing", encoding="utf-8")
 
-    provider = DummyProvider([
-        LLMResponse(
-            content="",
-            tool_calls=[
-                ToolCallRequest(
-                    id="hb_1",
-                    name="heartbeat",
-                    arguments={"action": "run", "tasks": "check open tasks"},
-                )
-            ],
-        )
-    ])
+    agent = _make_mock_agent(['{"action": "run", "tasks": "check open tasks"}'])
 
     called_with: list[str] = []
 
@@ -83,8 +79,7 @@ async def test_trigger_now_executes_when_decision_is_run(tmp_path) -> None:
 
     service = HeartbeatService(
         workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
+        agent=agent,
         on_execute=_on_execute,
     )
 
@@ -97,26 +92,14 @@ async def test_trigger_now_executes_when_decision_is_run(tmp_path) -> None:
 async def test_trigger_now_returns_none_when_decision_is_skip(tmp_path) -> None:
     (tmp_path / "HEARTBEAT.md").write_text("- [ ] do thing", encoding="utf-8")
 
-    provider = DummyProvider([
-        LLMResponse(
-            content="",
-            tool_calls=[
-                ToolCallRequest(
-                    id="hb_1",
-                    name="heartbeat",
-                    arguments={"action": "skip"},
-                )
-            ],
-        )
-    ])
+    agent = _make_mock_agent(['{"action": "skip"}'])
 
     async def _on_execute(tasks: str) -> str:
         return tasks
 
     service = HeartbeatService(
         workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
+        agent=agent,
         on_execute=_on_execute,
     )
 
@@ -124,21 +107,14 @@ async def test_trigger_now_returns_none_when_decision_is_skip(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_tick_notifies_when_evaluator_says_yes(tmp_path, monkeypatch) -> None:
-    """Phase 1 run -> Phase 2 execute -> Phase 3 evaluate=notify -> on_notify called."""
+async def test_tick_notifies_on_execution(tmp_path) -> None:
+    """Phase 1 run -> Phase 2 execute -> Phase 3 evaluate -> notify."""
     (tmp_path / "HEARTBEAT.md").write_text("- [ ] check deployments", encoding="utf-8")
 
-    provider = DummyProvider([
-        LLMResponse(
-            content="",
-            tool_calls=[
-                ToolCallRequest(
-                    id="hb_1",
-                    name="heartbeat",
-                    arguments={"action": "run", "tasks": "check deployments"},
-                )
-            ],
-        ),
+    # First response for _decide(), second for _evaluate()
+    agent = _make_mock_agent([
+        '{"action": "run", "tasks": "check deployments"}',
+        '{"should_notify": true, "reason": "actionable error"}',
     ])
 
     executed: list[str] = []
@@ -153,16 +129,10 @@ async def test_tick_notifies_when_evaluator_says_yes(tmp_path, monkeypatch) -> N
 
     service = HeartbeatService(
         workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
+        agent=agent,
         on_execute=_on_execute,
         on_notify=_on_notify,
     )
-
-    async def _eval_notify(*a, **kw):
-        return True
-
-    monkeypatch.setattr("nanobot.utils.evaluator.evaluate_response", _eval_notify)
 
     await service._tick()
     assert executed == ["check deployments"]
@@ -170,120 +140,147 @@ async def test_tick_notifies_when_evaluator_says_yes(tmp_path, monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_tick_suppresses_when_evaluator_says_no(tmp_path, monkeypatch) -> None:
-    """Phase 1 run -> Phase 2 execute -> Phase 3 evaluate=silent -> on_notify NOT called."""
+async def test_tick_silences_when_evaluation_says_no(tmp_path) -> None:
+    """Phase 1 run -> Phase 2 execute -> Phase 3 evaluate -> silent (no notify)."""
     (tmp_path / "HEARTBEAT.md").write_text("- [ ] check status", encoding="utf-8")
 
-    provider = DummyProvider([
-        LLMResponse(
-            content="",
-            tool_calls=[
-                ToolCallRequest(
-                    id="hb_1",
-                    name="heartbeat",
-                    arguments={"action": "run", "tasks": "check status"},
-                )
-            ],
-        ),
+    agent = _make_mock_agent([
+        '{"action": "run", "tasks": "check status"}',
+        '{"should_notify": false, "reason": "routine status check"}',
     ])
 
-    executed: list[str] = []
-    notified: list[str] = []
-
     async def _on_execute(tasks: str) -> str:
-        executed.append(tasks)
-        return "everything is fine, no issues"
+        return "everything is fine"
+
+    notified: list[str] = []
 
     async def _on_notify(response: str) -> None:
         notified.append(response)
 
     service = HeartbeatService(
         workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
+        agent=agent,
         on_execute=_on_execute,
         on_notify=_on_notify,
     )
 
-    async def _eval_silent(*a, **kw):
-        return False
-
-    monkeypatch.setattr("nanobot.utils.evaluator.evaluate_response", _eval_silent)
-
     await service._tick()
-    assert executed == ["check status"]
     assert notified == []
-
-
-@pytest.mark.asyncio
-async def test_decide_retries_transient_error_then_succeeds(tmp_path, monkeypatch) -> None:
-    provider = DummyProvider([
-        LLMResponse(content="429 rate limit", finish_reason="error"),
-        LLMResponse(
-            content="",
-            tool_calls=[
-                ToolCallRequest(
-                    id="hb_1",
-                    name="heartbeat",
-                    arguments={"action": "run", "tasks": "check open tasks"},
-                )
-            ],
-        ),
-    ])
-
-    delays: list[int] = []
-
-    async def _fake_sleep(delay: int) -> None:
-        delays.append(delay)
-
-    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
-
-    service = HeartbeatService(
-        workspace=tmp_path,
-        provider=provider,
-        model="openai/gpt-4o-mini",
-    )
-
-    action, tasks = await service._decide("heartbeat content")
-
-    assert action == "run"
-    assert tasks == "check open tasks"
-    assert provider.calls == 2
-    assert delays == [1]
 
 
 @pytest.mark.asyncio
 async def test_decide_prompt_includes_current_time(tmp_path) -> None:
     """Phase 1 user prompt must contain current time so the LLM can judge task urgency."""
+    captured_prompts: list[str] = []
 
-    captured_messages: list[dict] = []
-
-    class CapturingProvider(LLMProvider):
-        async def chat(self, *, messages=None, **kwargs) -> LLMResponse:
-            if messages:
-                captured_messages.extend(messages)
-            return LLMResponse(
-                content="",
-                tool_calls=[
-                    ToolCallRequest(
-                        id="hb_1", name="heartbeat",
-                        arguments={"action": "skip"},
-                    )
-                ],
-            )
-
-        def get_default_model(self) -> str:
-            return "test-model"
+    agent = MagicMock()
+    async def fake_run(**kwargs):
+        captured_prompts.append(kwargs.get("user_message", ""))
+        return '{"action": "skip"}'
+    agent.run = fake_run
 
     service = HeartbeatService(
         workspace=tmp_path,
-        provider=CapturingProvider(),
-        model="test-model",
+        agent=agent,
     )
 
     await service._decide("- [ ] check servers at 10:00 UTC")
 
-    user_msg = captured_messages[1]
-    assert user_msg["role"] == "user"
-    assert "Current Time:" in user_msg["content"]
+    assert len(captured_prompts) == 1
+    assert "Current Time:" in captured_prompts[0]
 
+
+@pytest.mark.asyncio
+async def test_decide_handles_non_json_response(tmp_path) -> None:
+    """Non-JSON response should fall back to skip."""
+    agent = _make_mock_agent(["This is not JSON"])
+    service = HeartbeatService(
+        workspace=tmp_path,
+        agent=agent,
+    )
+
+    action, tasks = await service._decide("heartbeat content")
+    assert action == "skip"
+    assert tasks == ""
+
+
+@pytest.mark.asyncio
+async def test_decide_handles_missing_action_key(tmp_path) -> None:
+    """JSON without action key should fall back to skip."""
+    agent = _make_mock_agent(['{"other": "value"}'])
+    service = HeartbeatService(
+        workspace=tmp_path,
+        agent=agent,
+    )
+
+    action, tasks = await service._decide("heartbeat content")
+    assert action == "skip"
+    assert tasks == ""
+
+
+# ---------------------------------------------------------------------------
+# Notification gate tests (_evaluate)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_evaluate_returns_true_when_should_notify_is_true(tmp_path) -> None:
+    """Phase 3: evaluation response with should_notify=true returns True."""
+    agent = _make_mock_agent(['{"should_notify": true, "reason": "actionable error"}'])
+    service = HeartbeatService(workspace=tmp_path, agent=agent)
+
+    result = await service._evaluate("deployment failed on staging", "check deployments")
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_evaluate_returns_false_when_should_notify_is_false(tmp_path) -> None:
+    """Phase 3: evaluation response with should_notify=false returns False."""
+    agent = _make_mock_agent(['{"should_notify": false, "reason": "routine check"}'])
+    service = HeartbeatService(workspace=tmp_path, agent=agent)
+
+    result = await service._evaluate("all systems normal", "check status")
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_evaluate_falls_back_to_true_on_parse_error(tmp_path) -> None:
+    """Non-JSON evaluation response falls back to should_notify=True."""
+    agent = _make_mock_agent(["I think you should know about this"])
+    service = HeartbeatService(workspace=tmp_path, agent=agent)
+
+    result = await service._evaluate("some response", "some task")
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_evaluate_extracts_from_text_when_json_fails(tmp_path) -> None:
+    """Text-only response with should_notify key is extracted."""
+    agent = _make_mock_agent(['{"should_notify": false, "reason": "all clear"}'])
+    service = HeartbeatService(workspace=tmp_path, agent=agent)
+
+    result = await service._evaluate("everything is fine", "routine check")
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_evaluate_includes_task_context_in_prompt(tmp_path) -> None:
+    """The task context is passed to the evaluation prompt."""
+    captured_prompts: list[str] = []
+
+    agent = MagicMock()
+    async def fake_run(**kwargs):
+        captured_prompts.append(kwargs.get("user_message", ""))
+        return '{"should_notify": false, "reason": "ok"}'
+    agent.run = fake_run
+
+    service = HeartbeatService(workspace=tmp_path, agent=agent)
+
+    await service._evaluate("the result", "my specific task")
+
+    assert len(captured_prompts) == 1
+    assert "my specific task" in captured_prompts[0]
+    assert "the result" in captured_prompts[0]

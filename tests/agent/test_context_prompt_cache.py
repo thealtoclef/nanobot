@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import tempfile
 from datetime import datetime as real_datetime
 from importlib.resources import files as pkg_files
 from pathlib import Path
 import datetime as datetime_module
+import shutil
 
 from nanobot.agent.context import ContextBuilder
+from nanobot.db import Database
 
 
 class _FakeDatetime(real_datetime):
@@ -24,6 +27,11 @@ def _make_workspace(tmp_path: Path) -> Path:
     return workspace
 
 
+def _make_db(tmp_path: Path) -> Database:
+    db_path = tmp_path / "test.db"
+    return Database(tmp_path)
+
+
 def test_bootstrap_files_are_backed_by_templates() -> None:
     template_dir = pkg_files("nanobot") / "templates"
 
@@ -36,7 +44,8 @@ def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) ->
     monkeypatch.setattr(datetime_module, "datetime", _FakeDatetime)
 
     workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
+    db = _make_db(tmp_path)
+    builder = ContextBuilder(workspace, db)
 
     _FakeDatetime.current = real_datetime(2026, 2, 24, 13, 59)
     prompt1 = builder.build_system_prompt()
@@ -50,19 +59,17 @@ def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) ->
 def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
     """Runtime metadata should be merged with the user message."""
     workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
+    db = _make_db(tmp_path)
+    builder = ContextBuilder(workspace, db)
 
-    messages = builder.build_messages(
+    messages, _ = builder.build_messages(
         history=[],
         current_message="Return exactly: OK",
         channel="cli",
         chat_id="direct",
     )
 
-    assert messages[0]["role"] == "system"
-    assert "## Current Session" not in messages[0]["content"]
-
-    # Runtime context is now merged with user message into a single message
+    # Runtime context is merged with user message; no system message from build_messages
     assert messages[-1]["role"] == "user"
     user_content = messages[-1]["content"]
     assert isinstance(user_content, str)
@@ -75,9 +82,10 @@ def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
 
 def test_subagent_result_does_not_create_consecutive_assistant_messages(tmp_path) -> None:
     workspace = _make_workspace(tmp_path)
-    builder = ContextBuilder(workspace)
+    db = _make_db(tmp_path)
+    builder = ContextBuilder(workspace, db)
 
-    messages = builder.build_messages(
+    messages, _ = builder.build_messages(
         history=[{"role": "assistant", "content": "previous result"}],
         current_message="subagent result",
         channel="cli",

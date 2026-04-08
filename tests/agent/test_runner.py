@@ -1,937 +1,412 @@
-"""Tests for the shared agent runner and its integration contracts."""
+"""Tests for AgentRunner session helpers: _save_turn, _sanitize_persisted_blocks, _restore_runtime_checkpoint."""
 
 from __future__ import annotations
 
-import asyncio
-import os
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.config.schema import AgentDefaults
-from nanobot.agent.tools.base import Tool
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.providers.base import LLMResponse, ToolCallRequest
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
-_MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
+from nanobot.agent.runner import AgentRunner
+from nanobot.bus.queue import MessageBus
+from nanobot.session.manager import Session
 
 
-def _make_loop(tmp_path):
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.queue import MessageBus
-
+def _make_runner(tmp_path: Path) -> AgentRunner:
+    """Create a minimal AgentRunner for testing session helpers."""
     bus = MessageBus()
-    provider = MagicMock()
-    provider.get_default_model.return_value = "test-model"
+    from nanobot.agent.agent import NanobotAgent
 
-    with patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr:
-        MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
-        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
-    return loop
+    agent = MagicMock(spec=NanobotAgent)
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.workspace = tmp_path
+    runner.bus = bus
+    runner.sessions = runner.sessions = MagicMock()
+    runner.max_tool_result_chars = 16000
+    runner._active_tasks = {}
+    runner._background_tasks = []
+    return runner
 
 
-@pytest.mark.asyncio
-async def test_runner_preserves_reasoning_fields_and_tool_results():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+class TestSaveTurn:
+    """Tests for _save_turn and _sanitize_persisted_blocks."""
 
-    provider = MagicMock()
-    captured_second_call: list[dict] = []
-    call_count = {"n": 0}
+    def test_save_turn_skips_runtime_context_only_user_messages(self, tmp_path: Path) -> None:
+        from nanobot.agent.context import ContextBuilder
 
-    async def chat_with_retry(*, messages, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return LLMResponse(
-                content="thinking",
-                tool_calls=[ToolCallRequest(id="call_1", name="list_dir", arguments={"path": "."})],
-                reasoning_content="hidden reasoning",
-                thinking_blocks=[{"type": "thinking", "thinking": "step"}],
-                usage={"prompt_tokens": 5, "completion_tokens": 3},
+        runner = _make_runner(tmp_path)
+        session = Session(key="test:runtime-only")
+        runtime = ContextBuilder._RUNTIME_CONTEXT_TAG + "\n\n"
+
+        new_messages = [ModelRequest(parts=[UserPromptPart(content=runtime)])]
+        runner._save_turn(session, new_messages)
+        assert session.messages == []
+
+    def test_save_turn_keeps_user_message_after_runtime_strip(self, tmp_path: Path) -> None:
+        from nanobot.agent.context import ContextBuilder
+
+        runner = _make_runner(tmp_path)
+        session = Session(key="test:user-after-runtime")
+        runtime = ContextBuilder._RUNTIME_CONTEXT_TAG + "\n\nHello, how are you?"
+
+        new_messages = [ModelRequest(parts=[UserPromptPart(content=runtime)])]
+        runner._save_turn(session, new_messages)
+        assert len(session.messages) == 1
+        assert session.messages[0]["content"] == "Hello, how are you?"
+
+    def test_save_turn_keeps_image_placeholder_with_path(self, tmp_path: Path) -> None:
+        from nanobot.agent.context import ContextBuilder
+
+        runner = _make_runner(tmp_path)
+        session = Session(key="test:image-placeholder")
+
+        new_messages = [
+            ModelRequest(
+                parts=[
+                    UserPromptPart(
+                        content=[
+                            {
+                                "type": "text",
+                                "text": ContextBuilder._RUNTIME_CONTEXT_TAG + "\nCurrent Time: now",
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,abc"},
+                                "_meta": {"path": "/media/feishu/photo.jpg"},
+                            },
+                        ]
+                    )
+                ]
             )
-        captured_second_call[:] = messages
-        return LLMResponse(content="done", tool_calls=[], usage={})
+        ]
+        runner._save_turn(session, new_messages)
+        assert len(session.messages) == 1
+        content = session.messages[0]["content"]
+        assert isinstance(content, list)
+        assert {"type": "text", "text": "[image: /media/feishu/photo.jpg]"} in content
 
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    tools.execute = AsyncMock(return_value="tool result")
+    def test_save_turn_keeps_image_placeholder_without_meta(self, tmp_path: Path) -> None:
+        from nanobot.agent.context import ContextBuilder
 
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": "do task"},
-        ],
-        tools=tools,
-        model="test-model",
-        max_iterations=3,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-    ))
+        runner = _make_runner(tmp_path)
+        session = Session(key="test:image-no-meta")
 
-    assert result.final_content == "done"
-    assert result.tools_used == ["list_dir"]
-    assert result.tool_events == [
-        {"name": "list_dir", "status": "ok", "detail": "tool result"}
-    ]
-
-    assistant_messages = [
-        msg for msg in captured_second_call
-        if msg.get("role") == "assistant" and msg.get("tool_calls")
-    ]
-    assert len(assistant_messages) == 1
-    assert assistant_messages[0]["reasoning_content"] == "hidden reasoning"
-    assert assistant_messages[0]["thinking_blocks"] == [{"type": "thinking", "thinking": "step"}]
-    assert any(
-        msg.get("role") == "tool" and msg.get("content") == "tool result"
-        for msg in captured_second_call
-    )
-
-
-@pytest.mark.asyncio
-async def test_runner_calls_hooks_in_order():
-    from nanobot.agent.hook import AgentHook, AgentHookContext
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-    call_count = {"n": 0}
-    events: list[tuple] = []
-
-    async def chat_with_retry(**kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return LLMResponse(
-                content="thinking",
-                tool_calls=[ToolCallRequest(id="call_1", name="list_dir", arguments={"path": "."})],
+        new_messages = [
+            ModelRequest(
+                parts=[
+                    UserPromptPart(
+                        content=[
+                            {
+                                "type": "text",
+                                "text": ContextBuilder._RUNTIME_CONTEXT_TAG + "\nCurrent Time: now",
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,abc"},
+                            },
+                        ]
+                    )
+                ]
             )
-        return LLMResponse(content="done", tool_calls=[], usage={})
+        ]
+        runner._save_turn(session, new_messages)
+        assert len(session.messages) == 1
+        content = session.messages[0]["content"]
+        assert isinstance(content, list)
+        assert {"type": "text", "text": "[image]"} in content
 
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    tools.execute = AsyncMock(return_value="tool result")
+    def test_save_turn_truncates_long_tool_result(self, tmp_path: Path) -> None:
+        from pydantic_ai.messages import ToolReturnPart
 
-    class RecordingHook(AgentHook):
-        async def before_iteration(self, context: AgentHookContext) -> None:
-            events.append(("before_iteration", context.iteration))
+        runner = _make_runner(tmp_path)
+        runner.max_tool_result_chars = 100
+        session = Session(key="test:tool-long")
 
-        async def before_execute_tools(self, context: AgentHookContext) -> None:
-            events.append((
-                "before_execute_tools",
-                context.iteration,
-                [tc.name for tc in context.tool_calls],
-            ))
+        content = "x" * 200
 
-        async def after_iteration(self, context: AgentHookContext) -> None:
-            events.append((
-                "after_iteration",
-                context.iteration,
-                context.final_content,
-                list(context.tool_results),
-                list(context.tool_events),
-                context.stop_reason,
-            ))
-
-        def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
-            events.append(("finalize_content", context.iteration, content))
-            return content.upper() if content else content
-
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[],
-        tools=tools,
-        model="test-model",
-        max_iterations=3,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        hook=RecordingHook(),
-    ))
-
-    assert result.final_content == "DONE"
-    assert events == [
-        ("before_iteration", 0),
-        ("before_execute_tools", 0, ["list_dir"]),
-        (
-            "after_iteration",
-            0,
-            None,
-            ["tool result"],
-            [{"name": "list_dir", "status": "ok", "detail": "tool result"}],
-            None,
-        ),
-        ("before_iteration", 1),
-        ("finalize_content", 1, "done"),
-        ("after_iteration", 1, "DONE", [], [], "completed"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_runner_streaming_hook_receives_deltas_and_end_signal():
-    from nanobot.agent.hook import AgentHook, AgentHookContext
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-    streamed: list[str] = []
-    endings: list[bool] = []
-
-    async def chat_stream_with_retry(*, on_content_delta, **kwargs):
-        await on_content_delta("he")
-        await on_content_delta("llo")
-        return LLMResponse(content="hello", tool_calls=[], usage={})
-
-    provider.chat_stream_with_retry = chat_stream_with_retry
-    provider.chat_with_retry = AsyncMock()
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-
-    class StreamingHook(AgentHook):
-        def wants_streaming(self) -> bool:
-            return True
-
-        async def on_stream(self, context: AgentHookContext, delta: str) -> None:
-            streamed.append(delta)
-
-        async def on_stream_end(self, context: AgentHookContext, *, resuming: bool) -> None:
-            endings.append(resuming)
-
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[],
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        hook=StreamingHook(),
-    ))
-
-    assert result.final_content == "hello"
-    assert streamed == ["he", "llo"]
-    assert endings == [False]
-    provider.chat_with_retry.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_runner_returns_max_iterations_fallback():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(
-        content="still working",
-        tool_calls=[ToolCallRequest(id="call_1", name="list_dir", arguments={"path": "."})],
-    ))
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    tools.execute = AsyncMock(return_value="tool result")
-
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[],
-        tools=tools,
-        model="test-model",
-        max_iterations=2,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-    ))
-
-    assert result.stop_reason == "max_iterations"
-    assert result.final_content == (
-        "I reached the maximum number of tool call iterations (2) "
-        "without completing the task. You can try breaking the task into smaller steps."
-    )
-    assert result.messages[-1]["role"] == "assistant"
-    assert result.messages[-1]["content"] == result.final_content
-
-@pytest.mark.asyncio
-async def test_runner_returns_structured_tool_error():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(
-        content="working",
-        tool_calls=[ToolCallRequest(id="call_1", name="list_dir", arguments={})],
-    ))
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    tools.execute = AsyncMock(side_effect=RuntimeError("boom"))
-
-    runner = AgentRunner(provider)
-
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[],
-        tools=tools,
-        model="test-model",
-        max_iterations=2,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        fail_on_tool_error=True,
-    ))
-
-    assert result.stop_reason == "tool_error"
-    assert result.error == "Error: RuntimeError: boom"
-    assert result.tool_events == [
-        {"name": "list_dir", "status": "error", "detail": "boom"}
-    ]
-
-
-@pytest.mark.asyncio
-async def test_runner_persists_large_tool_results_for_follow_up_calls(tmp_path):
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-    captured_second_call: list[dict] = []
-    call_count = {"n": 0}
-
-    async def chat_with_retry(*, messages, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return LLMResponse(
-                content="working",
-                tool_calls=[ToolCallRequest(id="call_big", name="list_dir", arguments={"path": "."})],
-                usage={"prompt_tokens": 5, "completion_tokens": 3},
+        new_messages = [
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(tool_name="read_file", tool_call_id="call_1", content=content)
+                ]
             )
-        captured_second_call[:] = messages
-        return LLMResponse(content="done", tool_calls=[], usage={})
+        ]
+        runner._save_turn(session, new_messages)
+        assert len(session.messages[0]["content"]) < 200
+        assert "..." in session.messages[0]["content"]
 
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    tools.execute = AsyncMock(return_value="x" * 20_000)
+    def test_save_turn_skips_empty_assistant_messages(self, tmp_path: Path) -> None:
+        runner = _make_runner(tmp_path)
+        session = Session(key="test:empty-assistant")
 
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[{"role": "user", "content": "do task"}],
-        tools=tools,
-        model="test-model",
-        max_iterations=2,
-        workspace=tmp_path,
-        session_key="test:runner",
-        max_tool_result_chars=2048,
-    ))
+        new_messages = [ModelResponse(parts=[TextPart(content="")])]
+        runner._save_turn(session, new_messages)
+        assert session.messages == []
 
-    assert result.final_content == "done"
-    tool_message = next(msg for msg in captured_second_call if msg.get("role") == "tool")
-    assert "[tool output persisted]" in tool_message["content"]
-    assert "tool-results" in tool_message["content"]
-    assert (tmp_path / ".nanobot" / "tool-results" / "test_runner" / "call_big.txt").exists()
+    def test_save_turn_adds_timestamp(self, tmp_path: Path) -> None:
+        runner = _make_runner(tmp_path)
+        session = Session(key="test:timestamp")
+
+        new_messages = [ModelRequest(parts=[UserPromptPart(content="Hello")])]
+        runner._save_turn(session, new_messages)
+        assert "timestamp" in session.messages[0]
 
 
-def test_persist_tool_result_prunes_old_session_buckets(tmp_path):
-    from nanobot.utils.helpers import maybe_persist_tool_result
+class TestSanitizePersistedBlocks:
+    """Tests for _sanitize_persisted_blocks."""
 
-    root = tmp_path / ".nanobot" / "tool-results"
-    old_bucket = root / "old_session"
-    recent_bucket = root / "recent_session"
-    old_bucket.mkdir(parents=True)
-    recent_bucket.mkdir(parents=True)
-    (old_bucket / "old.txt").write_text("old", encoding="utf-8")
-    (recent_bucket / "recent.txt").write_text("recent", encoding="utf-8")
+    def test_passthrough_for_simple_text_blocks(self, tmp_path: Path) -> None:
+        runner = _make_runner(tmp_path)
+        blocks = [{"type": "text", "text": "hello world"}]
+        result = runner._sanitize_persisted_blocks(blocks)
+        assert result == blocks
 
-    stale = time.time() - (8 * 24 * 60 * 60)
-    os.utime(old_bucket, (stale, stale))
-    os.utime(old_bucket / "old.txt", (stale, stale))
+    def test_drops_runtime_context_text_blocks(self, tmp_path: Path) -> None:
+        from nanobot.agent.context import ContextBuilder
 
-    persisted = maybe_persist_tool_result(
-        tmp_path,
-        "current:session",
-        "call_big",
-        "x" * 5000,
-        max_chars=64,
-    )
+        runner = _make_runner(tmp_path)
+        blocks = [
+            {"type": "text", "text": ContextBuilder._RUNTIME_CONTEXT_TAG + "\nCurrent Time: now"},
+            {"type": "text", "text": "real content"},
+        ]
+        result = runner._sanitize_persisted_blocks(blocks, drop_runtime=True)
+        assert len(result) == 1
+        assert result[0]["text"] == "real content"
 
-    assert "[tool output persisted]" in persisted
-    assert not old_bucket.exists()
-    assert recent_bucket.exists()
-    assert (root / "current_session" / "call_big.txt").exists()
+    def test_replaces_base64_images_with_placeholder(self, tmp_path: Path) -> None:
+        runner = _make_runner(tmp_path)
+        blocks = [
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,abc"},
+                "_meta": {"path": "/img/photo.png"},
+            },
+        ]
+        result = runner._sanitize_persisted_blocks(blocks)
+        assert result == [{"type": "text", "text": "[image: /img/photo.png]"}]
 
+    def test_replaces_base64_images_without_path(self, tmp_path: Path) -> None:
+        runner = _make_runner(tmp_path)
+        blocks = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]
+        result = runner._sanitize_persisted_blocks(blocks)
+        assert result == [{"type": "text", "text": "[image]"}]
 
-def test_persist_tool_result_leaves_no_temp_files(tmp_path):
-    from nanobot.utils.helpers import maybe_persist_tool_result
-
-    root = tmp_path / ".nanobot" / "tool-results"
-    maybe_persist_tool_result(
-        tmp_path,
-        "current:session",
-        "call_big",
-        "x" * 5000,
-        max_chars=64,
-    )
-
-    assert (root / "current_session" / "call_big.txt").exists()
-    assert list((root / "current_session").glob("*.tmp")) == []
-
-
-def test_persist_tool_result_logs_cleanup_failures(monkeypatch, tmp_path):
-    from nanobot.utils.helpers import maybe_persist_tool_result
-
-    warnings: list[str] = []
-
-    monkeypatch.setattr(
-        "nanobot.utils.helpers._cleanup_tool_result_buckets",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("busy")),
-    )
-    monkeypatch.setattr(
-        "nanobot.utils.helpers.logger.warning",
-        lambda message, *args: warnings.append(message.format(*args)),
-    )
-
-    persisted = maybe_persist_tool_result(
-        tmp_path,
-        "current:session",
-        "call_big",
-        "x" * 5000,
-        max_chars=64,
-    )
-
-    assert "[tool output persisted]" in persisted
-    assert warnings and "Failed to clean stale tool result buckets" in warnings[0]
+    def test_truncates_long_text_blocks(self, tmp_path: Path) -> None:
+        runner = _make_runner(tmp_path)
+        runner.max_tool_result_chars = 50
+        blocks = [{"type": "text", "text": "x" * 100}]
+        result = runner._sanitize_persisted_blocks(blocks, truncate_text=True)
+        assert len(result[0]["text"]) < 100
+        assert "..." in result[0]["text"]
 
 
-@pytest.mark.asyncio
-async def test_runner_replaces_empty_tool_result_with_marker():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+class TestRestoreRuntimeCheckpoint:
+    """Tests for _restore_runtime_checkpoint."""
 
-    provider = MagicMock()
-    captured_second_call: list[dict] = []
-    call_count = {"n": 0}
+    def test_restores_completed_and_pending_tools(self, tmp_path: Path) -> None:
+        runner = _make_runner(tmp_path)
+        session = Session(key="test:restore")
+        session.metadata["runtime_checkpoint"] = {
+            "assistant_message": {
+                "role": "assistant",
+                "content": "reading file...",
+                "tool_calls": [{"id": "call_1", "function": {"name": "read_file"}}],
+            },
+            "completed_tool_results": [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "name": "read_file",
+                    "content": "file contents",
+                },
+            ],
+            "pending_tool_calls": [
+                {"id": "call_2", "function": {"name": "write_file"}},
+            ],
+        }
 
-    async def chat_with_retry(*, messages, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return LLMResponse(
-                content="working",
-                tool_calls=[ToolCallRequest(id="call_1", name="noop", arguments={})],
-                usage={},
-            )
-        captured_second_call[:] = messages
-        return LLMResponse(content="done", tool_calls=[], usage={})
+        result = runner._restore_runtime_checkpoint(session)
 
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    tools.execute = AsyncMock(return_value="")
-
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[{"role": "user", "content": "do task"}],
-        tools=tools,
-        model="test-model",
-        max_iterations=2,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-    ))
-
-    assert result.final_content == "done"
-    tool_message = next(msg for msg in captured_second_call if msg.get("role") == "tool")
-    assert tool_message["content"] == "(noop completed with no output)"
-
-
-@pytest.mark.asyncio
-async def test_runner_uses_raw_messages_when_context_governance_fails():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-    captured_messages: list[dict] = []
-
-    async def chat_with_retry(*, messages, **kwargs):
-        captured_messages[:] = messages
-        return LLMResponse(content="done", tool_calls=[], usage={})
-
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    initial_messages = [
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": "hello"},
-    ]
-
-    runner = AgentRunner(provider)
-    runner._snip_history = MagicMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
-    result = await runner.run(AgentRunSpec(
-        initial_messages=initial_messages,
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-    ))
-
-    assert result.final_content == "done"
-    assert captured_messages == initial_messages
-
-
-@pytest.mark.asyncio
-async def test_runner_retries_empty_final_response_with_summary_prompt():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-    calls: list[dict] = []
-
-    async def chat_with_retry(*, messages, tools=None, **kwargs):
-        calls.append({"messages": messages, "tools": tools})
-        if len(calls) == 1:
-            return LLMResponse(
-                content=None,
-                tool_calls=[],
-                usage={"prompt_tokens": 10, "completion_tokens": 1},
-            )
-        return LLMResponse(
-            content="final answer",
-            tool_calls=[],
-            usage={"prompt_tokens": 3, "completion_tokens": 7},
+        assert result is True
+        roles = [m["role"] for m in session.messages]
+        assert roles == ["assistant", "tool", "tool"]
+        assert (
+            session.messages[2]["content"] == "Error: Task interrupted before this tool finished."
         )
 
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
+    def test_restores_nothing_when_no_checkpoint(self, tmp_path: Path) -> None:
+        runner = _make_runner(tmp_path)
+        session = Session(key="test:no-checkpoint")
+        session.metadata["runtime_checkpoint"] = None
 
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[{"role": "user", "content": "do task"}],
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-    ))
+        result = runner._restore_runtime_checkpoint(session)
 
-    assert result.final_content == "final answer"
-    assert len(calls) == 2
-    assert calls[1]["tools"] is None
-    assert "Do not call any more tools" in calls[1]["messages"][-1]["content"]
-    assert result.usage["prompt_tokens"] == 13
-    assert result.usage["completion_tokens"] == 8
+        assert result is False
+        assert session.messages == []
 
+    def test_restores_with_overlap_deduplication(self, tmp_path: Path) -> None:
+        """Existing messages that match the checkpoint are not duplicated."""
+        runner = _make_runner(tmp_path)
+        session = Session(key="test:overlap")
+        session.messages = [
+            {
+                "role": "assistant",
+                "content": "reading file...",
+                "tool_calls": [{"id": "call_1", "function": {"name": "read_file"}}],
+            },
+        ]
+        session.metadata["runtime_checkpoint"] = {
+            "assistant_message": {
+                "role": "assistant",
+                "content": "reading file...",
+                "tool_calls": [{"id": "call_1", "function": {"name": "read_file"}}],
+            },
+            "completed_tool_results": [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "name": "read_file",
+                    "content": "file contents",
+                },
+            ],
+            "pending_tool_calls": [],
+        }
 
-@pytest.mark.asyncio
-async def test_runner_uses_specific_message_after_empty_finalization_retry():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
+        result = runner._restore_runtime_checkpoint(session)
 
-    provider = MagicMock()
-
-    async def chat_with_retry(*, messages, **kwargs):
-        return LLMResponse(content=None, tool_calls=[], usage={})
-
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[{"role": "user", "content": "do task"}],
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-    ))
-
-    assert result.final_content == EMPTY_FINAL_RESPONSE_MESSAGE
-    assert result.stop_reason == "empty_final_response"
+        assert result is True
+        # Should not duplicate the already-existing assistant message
+        assert len(session.messages) == 2  # original assistant + tool result
 
 
-def test_snip_history_drops_orphaned_tool_results_from_trimmed_slice(monkeypatch):
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+class TestRunAgentLoopNoDuplication:
+    """Verify _run_agent_loop receives user_content separately from message_history."""
 
-    provider = MagicMock()
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    runner = AgentRunner(provider)
-    messages = [
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": "old user"},
-        {
-            "role": "assistant",
-            "content": "tool call",
-            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "ls", "arguments": "{}"}}],
-        },
-        {"role": "tool", "tool_call_id": "call_1", "content": "tool output"},
-        {"role": "assistant", "content": "after tool"},
-    ]
-    spec = AgentRunSpec(
-        initial_messages=messages,
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        context_window_tokens=2000,
-        context_block_limit=100,
-    )
+    def _make_runner_with_mock_agent(self, tmp_path: Path) -> tuple[AgentRunner, MagicMock]:
+        from nanobot.agent.agent import NanobotAgent
 
-    monkeypatch.setattr("nanobot.agent.runner.estimate_prompt_tokens_chain", lambda *_args, **_kwargs: (500, None))
-    token_sizes = {
-        "old user": 120,
-        "tool call": 120,
-        "tool output": 40,
-        "after tool": 40,
-        "system": 0,
-    }
-    monkeypatch.setattr(
-        "nanobot.agent.runner.estimate_message_tokens",
-        lambda msg: token_sizes.get(str(msg.get("content")), 40),
-    )
+        bus = MessageBus()
+        agent = MagicMock(spec=NanobotAgent)
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.workspace = tmp_path
+        runner.bus = bus
+        runner.agent = agent
+        runner.sessions = MagicMock()
+        runner.max_tool_result_chars = 16000
+        runner._active_tasks = {}
+        runner._background_tasks = []
+        runner._mcp_connected = True
+        runner._mcp_connecting = False
+        runner.mcp_servers = {}
+        return runner, agent
 
-    trimmed = runner._snip_history(spec, messages)
+    @pytest.mark.asyncio
+    async def test_non_streaming_passes_user_content_separately(self, tmp_path: Path) -> None:
+        runner, mock_agent = self._make_runner_with_mock_agent(tmp_path)
+        captured: dict = {}
 
-    assert trimmed == [
-        {"role": "system", "content": "system"},
-        {"role": "assistant", "content": "after tool"},
-    ]
+        async def fake_run(user_message, message_history=None):
+            captured["user_message"] = user_message
+            captured["message_history"] = message_history or []
+            return "ok", []
 
+        mock_agent.run = fake_run
 
-@pytest.mark.asyncio
-async def test_runner_keeps_going_when_tool_result_persistence_fails():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        initial_messages = [
+            {"role": "system", "content": "You are helpful."},
+        ]
 
-    provider = MagicMock()
-    captured_second_call: list[dict] = []
-    call_count = {"n": 0}
+        await runner._run_agent_loop(initial_messages, user_content="hello")
 
-    async def chat_with_retry(*, messages, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return LLMResponse(
-                content="working",
-                tool_calls=[ToolCallRequest(id="call_1", name="list_dir", arguments={"path": "."})],
-                usage={"prompt_tokens": 5, "completion_tokens": 3},
-            )
-        captured_second_call[:] = messages
-        return LLMResponse(content="done", tool_calls=[], usage={})
+        assert captured["user_message"] == "hello"
+        user_parts = [
+            p
+            for msg in captured["message_history"]
+            if isinstance(msg, ModelRequest)
+            for p in msg.parts
+            if isinstance(p, UserPromptPart)
+        ]
+        assert len(user_parts) == 0, f"UserPromptPart found in message_history — duplication!"
 
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    tools.execute = AsyncMock(return_value="tool result")
+    @pytest.mark.asyncio
+    async def test_non_streaming_passes_correct_user_content(self, tmp_path: Path) -> None:
+        runner, mock_agent = self._make_runner_with_mock_agent(tmp_path)
+        captured: dict = {}
 
-    runner = AgentRunner(provider)
-    with patch("nanobot.agent.runner.maybe_persist_tool_result", side_effect=RuntimeError("disk full")):
-        result = await runner.run(AgentRunSpec(
-            initial_messages=[{"role": "user", "content": "do task"}],
-            tools=tools,
-            model="test-model",
-            max_iterations=2,
-            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        ))
+        async def fake_run(user_message, message_history=None):
+            captured["user_message"] = user_message
+            captured["message_history"] = message_history or []
+            return "ok", []
 
-    assert result.final_content == "done"
-    tool_message = next(msg for msg in captured_second_call if msg.get("role") == "tool")
-    assert tool_message["content"] == "tool result"
+        mock_agent.run = fake_run
 
+        initial_messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "hi"},
+        ]
 
-class _DelayTool(Tool):
-    def __init__(self, name: str, *, delay: float, read_only: bool, shared_events: list[str]):
-        self._name = name
-        self._delay = delay
-        self._read_only = read_only
-        self._shared_events = shared_events
+        await runner._run_agent_loop(initial_messages, user_content="second")
 
-    @property
-    def name(self) -> str:
-        return self._name
+        assert captured["user_message"] == "second"
+        user_parts = [
+            p
+            for msg in captured["message_history"]
+            if isinstance(msg, ModelRequest)
+            for p in msg.parts
+            if isinstance(p, UserPromptPart)
+        ]
+        assert len(user_parts) == 1
+        assert user_parts[0].content == "first"
 
-    @property
-    def description(self) -> str:
-        return self._name
+    @pytest.mark.asyncio
+    async def test_streaming_passes_user_content_separately(self, tmp_path: Path) -> None:
+        runner, mock_agent = self._make_runner_with_mock_agent(tmp_path)
+        captured: dict = {}
 
-    @property
-    def parameters(self) -> dict:
-        return {"type": "object", "properties": {}, "required": []}
+        class FakeStreamResult:
+            response = MagicMock()
+            response.text = "streamed response"
+            _new_messages = []
 
-    @property
-    def read_only(self) -> bool:
-        return self._read_only
+            def new_messages(self):
+                return self._new_messages
 
-    async def execute(self, **kwargs):
-        self._shared_events.append(f"start:{self._name}")
-        await asyncio.sleep(self._delay)
-        self._shared_events.append(f"end:{self._name}")
-        return self._name
+            async def __aenter__(self):
+                return self
 
+            async def __aexit__(self, *args):
+                pass
 
-@pytest.mark.asyncio
-async def test_runner_batches_read_only_tools_before_exclusive_work():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+            async def stream_text(self, delta=True):
+                yield "chunk"
 
-    tools = ToolRegistry()
-    shared_events: list[str] = []
-    read_a = _DelayTool("read_a", delay=0.05, read_only=True, shared_events=shared_events)
-    read_b = _DelayTool("read_b", delay=0.05, read_only=True, shared_events=shared_events)
-    write_a = _DelayTool("write_a", delay=0.01, read_only=False, shared_events=shared_events)
-    tools.register(read_a)
-    tools.register(read_b)
-    tools.register(write_a)
+        def fake_run_stream(user_message, message_history=None):
+            captured["user_message"] = user_message
+            captured["message_history"] = message_history or []
+            return FakeStreamResult()
 
-    runner = AgentRunner(MagicMock())
-    await runner._execute_tools(
-        AgentRunSpec(
-            initial_messages=[],
-            tools=tools,
-            model="test-model",
-            max_iterations=1,
-            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-            concurrent_tools=True,
-        ),
-        [
-            ToolCallRequest(id="ro1", name="read_a", arguments={}),
-            ToolCallRequest(id="ro2", name="read_b", arguments={}),
-            ToolCallRequest(id="rw1", name="write_a", arguments={}),
-        ],
-        {},
-    )
+        mock_agent.run_stream = fake_run_stream
 
-    assert shared_events[0:2] == ["start:read_a", "start:read_b"]
-    assert "end:read_a" in shared_events and "end:read_b" in shared_events
-    assert shared_events.index("end:read_a") < shared_events.index("start:write_a")
-    assert shared_events.index("end:read_b") < shared_events.index("start:write_a")
-    assert shared_events[-2:] == ["start:write_a", "end:write_a"]
+        initial_messages = [
+            {"role": "system", "content": "You are helpful."},
+        ]
 
-
-@pytest.mark.asyncio
-async def test_runner_blocks_repeated_external_fetches():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-    captured_final_call: list[dict] = []
-    call_count = {"n": 0}
-
-    async def chat_with_retry(*, messages, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] <= 3:
-            return LLMResponse(
-                content="working",
-                tool_calls=[ToolCallRequest(id=f"call_{call_count['n']}", name="web_fetch", arguments={"url": "https://example.com"})],
-                usage={},
-            )
-        captured_final_call[:] = messages
-        return LLMResponse(content="done", tool_calls=[], usage={})
-
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    tools.execute = AsyncMock(return_value="page content")
-
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[{"role": "user", "content": "research task"}],
-        tools=tools,
-        model="test-model",
-        max_iterations=4,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-    ))
-
-    assert result.final_content == "done"
-    assert tools.execute.await_count == 2
-    blocked_tool_message = [
-        msg for msg in captured_final_call
-        if msg.get("role") == "tool" and msg.get("tool_call_id") == "call_3"
-    ][0]
-    assert "repeated external lookup blocked" in blocked_tool_message["content"]
-
-
-@pytest.mark.asyncio
-async def test_loop_max_iterations_message_stays_stable(tmp_path):
-    loop = _make_loop(tmp_path)
-    loop.provider.chat_with_retry = AsyncMock(return_value=LLMResponse(
-        content="working",
-        tool_calls=[ToolCallRequest(id="call_1", name="list_dir", arguments={})],
-    ))
-    loop.tools.get_definitions = MagicMock(return_value=[])
-    loop.tools.execute = AsyncMock(return_value="ok")
-    loop.max_iterations = 2
-
-    final_content, _, _ = await loop._run_agent_loop([])
-
-    assert final_content == (
-        "I reached the maximum number of tool call iterations (2) "
-        "without completing the task. You can try breaking the task into smaller steps."
-    )
-
-
-@pytest.mark.asyncio
-async def test_loop_stream_filter_handles_think_only_prefix_without_crashing(tmp_path):
-    loop = _make_loop(tmp_path)
-    deltas: list[str] = []
-    endings: list[bool] = []
-
-    async def chat_stream_with_retry(*, on_content_delta, **kwargs):
-        await on_content_delta("<think>hidden")
-        await on_content_delta("</think>Hello")
-        return LLMResponse(content="<think>hidden</think>Hello", tool_calls=[], usage={})
-
-    loop.provider.chat_stream_with_retry = chat_stream_with_retry
-
-    async def on_stream(delta: str) -> None:
-        deltas.append(delta)
-
-    async def on_stream_end(*, resuming: bool = False) -> None:
-        endings.append(resuming)
-
-    final_content, _, _ = await loop._run_agent_loop(
-        [],
-        on_stream=on_stream,
-        on_stream_end=on_stream_end,
-    )
-
-    assert final_content == "Hello"
-    assert deltas == ["Hello"]
-    assert endings == [False]
-
-
-@pytest.mark.asyncio
-async def test_loop_retries_think_only_final_response(tmp_path):
-    loop = _make_loop(tmp_path)
-    call_count = {"n": 0}
-
-    async def chat_with_retry(**kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return LLMResponse(content="<think>hidden</think>", tool_calls=[], usage={})
-        return LLMResponse(content="Recovered answer", tool_calls=[], usage={})
-
-    loop.provider.chat_with_retry = chat_with_retry
-
-    final_content, _, _ = await loop._run_agent_loop([])
-
-    assert final_content == "Recovered answer"
-    assert call_count["n"] == 2
-
-
-@pytest.mark.asyncio
-async def test_runner_tool_error_sets_final_content():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-
-    async def chat_with_retry(*, messages, **kwargs):
-        return LLMResponse(
-            content="working",
-            tool_calls=[ToolCallRequest(id="call_1", name="read_file", arguments={"path": "x"})],
-            usage={},
+        result = await runner._run_agent_loop(
+            initial_messages,
+            user_content="stream me",
+            on_stream=AsyncMock(),
         )
 
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    tools.execute = AsyncMock(side_effect=RuntimeError("boom"))
-
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[{"role": "user", "content": "do task"}],
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        fail_on_tool_error=True,
-    ))
-
-    assert result.final_content == "Error: RuntimeError: boom"
-    assert result.stop_reason == "tool_error"
-
-
-@pytest.mark.asyncio
-async def test_subagent_max_iterations_announces_existing_fallback(tmp_path, monkeypatch):
-    from nanobot.agent.subagent import SubagentManager
-    from nanobot.bus.queue import MessageBus
-
-    bus = MessageBus()
-    provider = MagicMock()
-    provider.get_default_model.return_value = "test-model"
-    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(
-        content="working",
-        tool_calls=[ToolCallRequest(id="call_1", name="list_dir", arguments={"path": "."})],
-    ))
-    mgr = SubagentManager(
-        provider=provider,
-        workspace=tmp_path,
-        bus=bus,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-    )
-    mgr._announce_result = AsyncMock()
-
-    async def fake_execute(self, **kwargs):
-        return "tool result"
-
-    monkeypatch.setattr("nanobot.agent.tools.filesystem.ListDirTool.execute", fake_execute)
-
-    await mgr._run_subagent("sub-1", "do task", "label", {"channel": "test", "chat_id": "c1"})
-
-    mgr._announce_result.assert_awaited_once()
-    args = mgr._announce_result.await_args.args
-    assert args[3] == "Task completed but no final response was generated."
-    assert args[5] == "ok"
-
-
-@pytest.mark.asyncio
-async def test_runner_accumulates_usage_and_preserves_cached_tokens():
-    """Runner should accumulate prompt/completion tokens across iterations
-    and preserve cached_tokens from provider responses."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-    call_count = {"n": 0}
-
-    async def chat_with_retry(*, messages, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return LLMResponse(
-                content="thinking",
-                tool_calls=[ToolCallRequest(id="call_1", name="read_file", arguments={"path": "x"})],
-                usage={"prompt_tokens": 100, "completion_tokens": 10, "cached_tokens": 80},
-            )
-        return LLMResponse(
-            content="done",
-            tool_calls=[],
-            usage={"prompt_tokens": 200, "completion_tokens": 20, "cached_tokens": 150},
-        )
-
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-    tools.execute = AsyncMock(return_value="file content")
-
-    runner = AgentRunner(provider)
-    result = await runner.run(AgentRunSpec(
-        initial_messages=[{"role": "user", "content": "do task"}],
-        tools=tools,
-        model="test-model",
-        max_iterations=3,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-    ))
-
-    # Usage should be accumulated across iterations
-    assert result.usage["prompt_tokens"] == 300  # 100 + 200
-    assert result.usage["completion_tokens"] == 30  # 10 + 20
-    assert result.usage["cached_tokens"] == 230  # 80 + 150
-
-
-@pytest.mark.asyncio
-async def test_runner_passes_cached_tokens_to_hook_context():
-    """Hook context.usage should contain cached_tokens."""
-    from nanobot.agent.hook import AgentHook, AgentHookContext
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-
-    provider = MagicMock()
-    captured_usage: list[dict] = []
-
-    class UsageHook(AgentHook):
-        async def after_iteration(self, context: AgentHookContext) -> None:
-            captured_usage.append(dict(context.usage))
-
-    async def chat_with_retry(**kwargs):
-        return LLMResponse(
-            content="done",
-            tool_calls=[],
-            usage={"prompt_tokens": 200, "completion_tokens": 20, "cached_tokens": 150},
-        )
-
-    provider.chat_with_retry = chat_with_retry
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-
-    runner = AgentRunner(provider)
-    await runner.run(AgentRunSpec(
-        initial_messages=[],
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        hook=UsageHook(),
-    ))
-
-    assert len(captured_usage) == 1
-    assert captured_usage[0]["cached_tokens"] == 150
+        assert captured["user_message"] == "stream me"
+        user_parts = [
+            p
+            for msg in captured["message_history"]
+            if isinstance(msg, ModelRequest)
+            for p in msg.parts
+            if isinstance(p, UserPromptPart)
+        ]
+        assert len(user_parts) == 0, "UserPromptPart in message_history — duplication!"

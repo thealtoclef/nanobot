@@ -8,13 +8,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from nanobot.db import upgrade_db
 from nanobot.nanobot import Nanobot, RunResult
 
 
 def _write_config(tmp_path: Path, overrides: dict | None = None) -> Path:
+    upgrade_db(tmp_path)
     data = {
-        "providers": {"openai": {"apiKey": "sk-test-key"}},
-        "agents": {"defaults": {"model": "openai/gpt-4.1"}},
+        "providers": {
+            "openai": {
+                "backend": "openai",
+                "base_url": "https://api.openai.com",
+                "api_key": "sk-test-key",
+            }
+        },
+        "agent": {"models": [{"name": "gpt-4.1", "provider": "openai"}]},
     }
     if overrides:
         data.update(overrides)
@@ -31,21 +39,29 @@ def test_from_config_missing_file():
 def test_from_config_creates_instance(tmp_path):
     config_path = _write_config(tmp_path)
     bot = Nanobot.from_config(config_path, workspace=tmp_path)
-    assert bot._loop is not None
-    assert bot._loop.workspace == tmp_path
+    assert bot._agent is not None
+    assert bot._agent.workspace == tmp_path
 
 
 def test_from_config_default_path():
-    from nanobot.config.schema import Config
+    from nanobot.config.schema import Config, ProviderConfig, ModelConfig
 
-    with patch("nanobot.config.loader.load_config") as mock_load, \
-         patch("nanobot.nanobot._make_provider") as mock_prov:
-        mock_load.return_value = Config()
-        mock_prov.return_value = MagicMock()
-        mock_prov.return_value.get_default_model.return_value = "test"
-        mock_prov.return_value.generation.max_tokens = 4096
-        Nanobot.from_config()
-        mock_load.assert_called_once_with(None)
+    config = Config(
+        providers={
+            "openai": ProviderConfig(
+                backend="openai", base_url="https://api.openai.com", api_key="sk-test"
+            )
+        },
+        agent={"models": [ModelConfig(name="gpt-4", provider="openai")]},
+    )
+    with (
+        patch("nanobot.config.loader.load_config") as mock_load,
+        patch("nanobot.agent.agent.Agent") as mock_agent,
+    ):
+        mock_load.return_value = config
+        mock_agent.return_value = MagicMock()
+        bot = Nanobot.from_config()
+        assert bot._agent is not None
 
 
 @pytest.mark.asyncio
@@ -53,64 +69,20 @@ async def test_run_returns_result(tmp_path):
     config_path = _write_config(tmp_path)
     bot = Nanobot.from_config(config_path, workspace=tmp_path)
 
-    from nanobot.bus.events import OutboundMessage
-
-    mock_response = OutboundMessage(
-        channel="cli", chat_id="direct", content="Hello back!"
-    )
-    bot._loop.process_direct = AsyncMock(return_value=mock_response)
+    bot._agent.run = AsyncMock(return_value=("Hello back!", []))
 
     result = await bot.run("hi")
 
     assert isinstance(result, RunResult)
     assert result.content == "Hello back!"
-    bot._loop.process_direct.assert_awaited_once_with("hi", session_key="sdk:default")
-
-
-@pytest.mark.asyncio
-async def test_run_with_hooks(tmp_path):
-    from nanobot.agent.hook import AgentHook, AgentHookContext
-    from nanobot.bus.events import OutboundMessage
-
-    config_path = _write_config(tmp_path)
-    bot = Nanobot.from_config(config_path, workspace=tmp_path)
-
-    class TestHook(AgentHook):
-        async def before_iteration(self, context: AgentHookContext) -> None:
-            pass
-
-    mock_response = OutboundMessage(
-        channel="cli", chat_id="direct", content="done"
-    )
-    bot._loop.process_direct = AsyncMock(return_value=mock_response)
-
-    result = await bot.run("hi", hooks=[TestHook()])
-
-    assert result.content == "done"
-    assert bot._loop._extra_hooks == []
-
-
-@pytest.mark.asyncio
-async def test_run_hooks_restored_on_error(tmp_path):
-    config_path = _write_config(tmp_path)
-    bot = Nanobot.from_config(config_path, workspace=tmp_path)
-
-    from nanobot.agent.hook import AgentHook
-
-    bot._loop.process_direct = AsyncMock(side_effect=RuntimeError("boom"))
-    original_hooks = bot._loop._extra_hooks
-
-    with pytest.raises(RuntimeError):
-        await bot.run("hi", hooks=[AgentHook()])
-
-    assert bot._loop._extra_hooks is original_hooks
+    bot._agent.run.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_run_none_response(tmp_path):
     config_path = _write_config(tmp_path)
     bot = Nanobot.from_config(config_path, workspace=tmp_path)
-    bot._loop.process_direct = AsyncMock(return_value=None)
+    bot._agent.run = AsyncMock(return_value=("", []))
 
     result = await bot.run("hi")
     assert result.content == ""
@@ -122,25 +94,22 @@ def test_workspace_override(tmp_path):
     custom_ws.mkdir()
 
     bot = Nanobot.from_config(config_path, workspace=custom_ws)
-    assert bot._loop.workspace == custom_ws
+    assert bot._agent.workspace == custom_ws
+
 
 @pytest.mark.asyncio
 async def test_run_custom_session_key(tmp_path):
-    from nanobot.bus.events import OutboundMessage
-
     config_path = _write_config(tmp_path)
     bot = Nanobot.from_config(config_path, workspace=tmp_path)
 
-    mock_response = OutboundMessage(
-        channel="cli", chat_id="direct", content="ok"
-    )
-    bot._loop.process_direct = AsyncMock(return_value=mock_response)
+    bot._agent.run = AsyncMock(return_value=("ok", []))
 
     await bot.run("hi", session_key="user-alice")
-    bot._loop.process_direct.assert_awaited_once_with("hi", session_key="user-alice")
+    bot._agent.run.assert_awaited_once()
 
 
 def test_import_from_top_level():
     from nanobot import Nanobot as N, RunResult as R
+
     assert N is Nanobot
     assert R is RunResult

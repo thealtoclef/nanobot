@@ -353,14 +353,21 @@ class TestProviderChannelInfo:
 
     def test_get_provider_names_returns_dict(self):
         from nanobot.cli.onboard import _get_provider_names
+        from nanobot.config.schema import ProvidersConfig, ProviderConfig
 
-        names = _get_provider_names()
+        # Create a mock config with providers
+        mock_providers = ProvidersConfig(
+            anthropic=ProviderConfig(backend="anthropic", base_url="https://api.anthropic.com"),
+            openai=ProviderConfig(backend="openai", base_url="https://api.openai.com"),
+        )
+        mock_config = Config(providers=mock_providers)
+
+        names = _get_provider_names(mock_config)
         assert isinstance(names, dict)
-        assert len(names) > 0
-        # Should include common providers
-        assert "openai" in names or "anthropic" in names
-        assert "openai_codex" not in names
-        assert "github_copilot" not in names
+        assert len(names) >= 2
+        # Should include the providers we added
+        assert "anthropic" in names
+        assert "openai" in names
 
     def test_get_channel_names_returns_dict(self):
         from nanobot.cli.onboard import _get_channel_names
@@ -369,17 +376,6 @@ class TestProviderChannelInfo:
         assert isinstance(names, dict)
         # Should include at least some channels
         assert len(names) >= 0
-
-    def test_get_provider_info_returns_valid_structure(self):
-        from nanobot.cli.onboard import _get_provider_info
-
-        info = _get_provider_info()
-        assert isinstance(info, dict)
-        # Each value should be a tuple with expected structure
-        for provider_name, value in info.items():
-            assert isinstance(value, tuple)
-            assert len(value) == 4  # (display_name, needs_api_key, needs_api_base, env_var)
-
 
 class _SimpleDraftModel(BaseModel):
     api_key: str = ""
@@ -483,7 +479,7 @@ class TestRunOnboardExitBehavior:
 
         def fake_configure_general_settings(config, section):
             if section == "Agent Settings":
-                config.agents.defaults.model = "test/provider-model"
+                config.agent.workspace = "/test/workspace"
 
         monkeypatch.setattr(onboard_wizard, "_show_main_menu_header", lambda: None)
         monkeypatch.setattr(onboard_wizard, "questionary", SimpleNamespace(select=fake_select))
