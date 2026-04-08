@@ -10,6 +10,7 @@ from nanobot.agent.agent import NanobotAgent
 from nanobot.bus.queue import MessageBus
 from nanobot.db import Database
 from nanobot.session.manager import SessionManager
+from pydantic_ai.messages import ModelMessage
 
 
 @dataclass(slots=True)
@@ -18,7 +19,7 @@ class RunResult:
 
     content: str
     tools_used: list[str]
-    messages: list[dict[str, Any]]
+    messages: list[ModelMessage]
 
 
 class Nanobot:
@@ -140,17 +141,12 @@ class Nanobot:
         except Exception:
             raise
 
-        from nanobot.agent.agent import model_messages_to_session_messages, sanitize_model_message
-
-        sanitized = [
-            m for m in (sanitize_model_message(msg) for msg in new_messages) if m is not None
-        ]
-        if sanitized:
-            self._sessions.add_messages(session_key, sanitized)
+        if new_messages:
+            self._sessions.add_messages(session_key, new_messages)
         all_messages = self._sessions.get_all_messages(session_key)
 
         return RunResult(
             content=(content or ""),
             tools_used=[],
-            messages=model_messages_to_session_messages(all_messages),
+            messages=all_messages,
         )

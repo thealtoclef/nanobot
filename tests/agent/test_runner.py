@@ -1,4 +1,4 @@
-"""Tests for AgentRunner session helpers: _save_turn, _sanitize_persisted_blocks, _restore_runtime_checkpoint."""
+"""Tests for AgentRunner session helpers: _restore_runtime_checkpoint."""
 
 from __future__ import annotations
 
@@ -63,54 +63,6 @@ def _make_tool_result_message(tool_name: str, tool_call_id: str, content: str) -
     return ModelRequest(
         parts=[ToolReturnPart(tool_name=tool_name, tool_call_id=tool_call_id, content=content)]
     )
-
-
-class TestSanitizePersistedBlocks:
-    """Tests for _sanitize_persisted_blocks."""
-
-    def test_passthrough_for_simple_text_blocks(self, tmp_path: Path) -> None:
-        runner = _make_runner(tmp_path, MagicMock())
-        blocks = [{"type": "text", "text": "hello world"}]
-        result = runner._sanitize_persisted_blocks(blocks)
-        assert result == blocks
-
-    def test_drops_runtime_context_text_blocks(self, tmp_path: Path) -> None:
-        from nanobot.agent.context import ContextBuilder
-
-        runner = _make_runner(tmp_path, MagicMock())
-        blocks = [
-            {"type": "text", "text": ContextBuilder._RUNTIME_CONTEXT_TAG + "\nCurrent Time: now"},
-            {"type": "text", "text": "real content"},
-        ]
-        result = runner._sanitize_persisted_blocks(blocks, drop_runtime=True)
-        assert len(result) == 1
-        assert result[0]["text"] == "real content"
-
-    def test_replaces_base64_images_with_placeholder(self, tmp_path: Path) -> None:
-        runner = _make_runner(tmp_path, MagicMock())
-        blocks = [
-            {
-                "type": "image_url",
-                "image_url": {"url": "data:image/png;base64,abc"},
-                "_meta": {"path": "/img/photo.png"},
-            },
-        ]
-        result = runner._sanitize_persisted_blocks(blocks)
-        assert result == [{"type": "text", "text": "[image: /img/photo.png]"}]
-
-    def test_replaces_base64_images_without_path(self, tmp_path: Path) -> None:
-        runner = _make_runner(tmp_path, MagicMock())
-        blocks = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]
-        result = runner._sanitize_persisted_blocks(blocks)
-        assert result == [{"type": "text", "text": "[image]"}]
-
-    def test_truncates_long_text_blocks(self, tmp_path: Path) -> None:
-        runner = _make_runner(tmp_path, MagicMock())
-        runner.max_tool_result_chars = 50
-        blocks = [{"type": "text", "text": "x" * 100}]
-        result = runner._sanitize_persisted_blocks(blocks, truncate_text=True)
-        assert len(result[0]["text"]) < 100
-        assert "..." in result[0]["text"]
 
 
 class TestRestoreRuntimeCheckpoint:

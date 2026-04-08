@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.agent import NanobotAgent, sanitize_model_message, trim_history
+from nanobot.agent.agent import NanobotAgent
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryConsolidator
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
@@ -426,9 +426,8 @@ class AgentRunner:
             await self.memory_consolidator.maybe_consolidate_by_tokens(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             unconsolidated = self.sessions.get_unconsolidated_messages(key)
-            trimmed = trim_history(unconsolidated, max_messages=500)
             model_history, prompt_content = self.context.build_messages(
-                history=trimmed,
+                history=unconsolidated,
                 current_message=msg.content,
                 channel=channel,
                 chat_id=chat_id,
@@ -442,12 +441,9 @@ class AgentRunner:
                 chat_id=chat_id,
                 message_id=msg.metadata.get("message_id"),
             )
-            # Sanitize and append
-            sanitized = [
-                m for m in (sanitize_model_message(msg) for msg in new_messages) if m is not None
-            ]
-            if sanitized:
-                self.sessions.add_messages(key, sanitized)
+            # Append new messages
+            if new_messages:
+                self.sessions.add_messages(key, new_messages)
             self._clear_runtime_checkpoint(key)
             return OutboundMessage(
                 channel=channel,
@@ -478,9 +474,8 @@ class AgentRunner:
                 message_tool.start_turn()
 
         unconsolidated = self.sessions.get_unconsolidated_messages(msg.session_key)
-        trimmed = trim_history(unconsolidated, max_messages=500)
         model_history, prompt_content = self.context.build_messages(
-            history=trimmed,
+            history=unconsolidated,
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel,
@@ -516,12 +511,9 @@ class AgentRunner:
         if not final_content or not final_content.strip():
             final_content = EMPTY_FINAL_RESPONSE_MESSAGE
 
-        # Sanitize and append
-        sanitized = [
-            m for m in (sanitize_model_message(msg) for msg in new_messages) if m is not None
-        ]
-        if sanitized:
-            self.sessions.add_messages(session.key, sanitized)
+        # Append new messages
+        if new_messages:
+            self.sessions.add_messages(session.key, new_messages)
         self._clear_runtime_checkpoint(session.key)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
@@ -680,22 +672,6 @@ class AgentRunner:
     # Session helpers
     # -------------------------------------------------------------------------
 
-    def _sanitize_persisted_blocks(
-        self,
-        content: list[dict[str, Any]],
-        *,
-        truncate_text: bool = False,
-        drop_runtime: bool = False,
-    ) -> list[dict[str, Any]]:
-        from nanobot.agent.agent import _sanitize_persisted_blocks as _shared
-
-        return _shared(
-            content,
-            self.max_tool_result_chars,
-            truncate_text=truncate_text,
-            drop_runtime=drop_runtime,
-        )
-
     def _set_runtime_checkpoint(self, session_key: str, payload: dict[str, Any]) -> None:
         self._checkpoints[session_key] = payload
 
@@ -703,77 +679,132 @@ class AgentRunner:
         self._checkpoints.pop(session_key, None)
 
     @staticmethod
-    def _checkpoint_message_key(message: dict[str, Any]) -> tuple[Any, ...]:
-        return (
-            message.get("role"),
-            message.get("content"),
-            message.get("tool_call_id"),
-            message.get("name"),
-            message.get("tool_calls"),
-            message.get("reasoning_content"),
-            message.get("thinking_blocks"),
+    def _checkpoint_message_key(msg: ModelMessage) -> tuple[Any, ...]:
+        """Create a comparison key for overlap detection."""
+        from pydantic_ai.messages import (
+            ModelRequest,
+            ModelResponse,
+            TextPart,
+            ToolCallPart,
+            ToolReturnPart,
+            UserPromptPart,
+            SystemPromptPart,
         )
+
+        if isinstance(msg, ModelRequest):
+            parts_key = []
+            for part in msg.parts:
+                if isinstance(part, UserPromptPart):
+                    parts_key.append(("user", part.content))
+                elif isinstance(part, SystemPromptPart):
+                    parts_key.append(("system", part.content))
+                elif isinstance(part, ToolReturnPart):
+                    parts_key.append(
+                        ("tool_return", part.tool_call_id, part.tool_name, part.content)
+                    )
+                else:
+                    parts_key.append(("other", str(part)))
+            return ("request", tuple(parts_key))
+        elif isinstance(msg, ModelResponse):
+            parts_key = []
+            for part in msg.parts:
+                if isinstance(part, TextPart):
+                    parts_key.append(("text", part.content))
+                elif isinstance(part, ToolCallPart):
+                    parts_key.append(
+                        ("tool_call", part.tool_call_id, part.tool_name, str(part.args))
+                    )
+                else:
+                    parts_key.append(("other", str(part)))
+            return ("response", tuple(parts_key))
+        return ("unknown",)
 
     def _restore_runtime_checkpoint(self, session_key: str) -> bool:
         """Materialize an unfinished turn into session history."""
-        from datetime import datetime
-
         checkpoint = self._checkpoints.get(session_key)
         if not isinstance(checkpoint, dict):
             return False
+
+        from pydantic_ai.messages import (
+            ModelRequest,
+            ModelResponse,
+            ToolReturnPart,
+            ToolCallPart,
+            TextPart,
+        )
 
         assistant_message = checkpoint.get("assistant_message")
         completed_tool_results = checkpoint.get("completed_tool_results") or []
         pending_tool_calls = checkpoint.get("pending_tool_calls") or []
 
-        restored_messages: list[dict[str, Any]] = []
+        restored: list[ModelMessage] = []
+
+        # Reconstruct assistant message as ModelResponse
         if isinstance(assistant_message, dict):
-            restored = dict(assistant_message)
-            restored.setdefault("timestamp", datetime.now().isoformat())
-            restored_messages.append(restored)
-        for message in completed_tool_results:
-            if isinstance(message, dict):
-                restored = dict(message)
-                restored.setdefault("timestamp", datetime.now().isoformat())
-                restored_messages.append(restored)
+            parts = []
+            if assistant_message.get("content"):
+                parts.append(TextPart(content=assistant_message["content"]))
+            for tc in assistant_message.get("tool_calls") or []:
+                parts.append(
+                    ToolCallPart(
+                        tool_name=tc.get("name", tc.get("function", {}).get("name", "")),
+                        tool_call_id=tc.get("id", ""),
+                        args=tc.get("arguments", {}),
+                    )
+                )
+            if parts:
+                restored.append(ModelResponse(parts=parts))
+
+        # Reconstruct completed tool results as ModelRequest with ToolReturnPart
+        for result in completed_tool_results:
+            if isinstance(result, dict):
+                restored.append(
+                    ModelRequest(
+                        parts=[
+                            ToolReturnPart(
+                                tool_name=result.get("name", ""),
+                                tool_call_id=result.get("tool_call_id", ""),
+                                content=result.get("content", ""),
+                            )
+                        ]
+                    )
+                )
+
+        # Reconstruct pending tool calls as error tool returns
         for tool_call in pending_tool_calls:
             if not isinstance(tool_call, dict):
                 continue
             tool_id = tool_call.get("id")
             name = ((tool_call.get("function") or {}).get("name")) or "tool"
-            restored_messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "name": name,
-                    "content": "Error: Task interrupted before this tool finished.",
-                    "timestamp": datetime.now().isoformat(),
-                }
+            restored.append(
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name=name,
+                            tool_call_id=tool_id,
+                            content="Error: Task interrupted before this tool finished.",
+                        )
+                    ]
+                )
             )
 
-        # Get current unconsolidated messages to check for overlap
+        # Get current unconsolidated for overlap detection (already list[ModelMessage])
         unconsolidated = self.sessions.get_unconsolidated_messages(session_key)
-        from nanobot.agent.agent import model_messages_to_session_messages
-
-        existing_dicts = model_messages_to_session_messages(unconsolidated)
 
         overlap = 0
-        max_overlap = min(len(existing_dicts), len(restored_messages))
+        max_overlap = min(len(unconsolidated), len(restored))
         for size in range(max_overlap, 0, -1):
-            existing = existing_dicts[-size:]
-            restored = restored_messages[:size]
+            existing = unconsolidated[-size:]
+            restored_slice = restored[:size]
             if all(
                 self._checkpoint_message_key(left) == self._checkpoint_message_key(right)
-                for left, right in zip(existing, restored)
+                for left, right in zip(existing, restored_slice)
             ):
                 overlap = size
                 break
 
-        if restored_messages[overlap:]:
-            from nanobot.agent.agent import session_messages_to_model_messages
-
-            model_messages = session_messages_to_model_messages(restored_messages[overlap:])
-            self.sessions.add_messages(session_key, model_messages)
+        if restored[overlap:]:
+            self.sessions.add_messages(session_key, restored[overlap:])
 
         self._clear_runtime_checkpoint(session_key)
         return True
