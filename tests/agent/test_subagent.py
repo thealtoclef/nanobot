@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai import ModelResponse, TextPart
+from pydantic_ai.messages import ModelRequest, ModelMessage, UserPromptPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from nanobot.agent.subagent import SubagentManager
 
@@ -113,37 +115,56 @@ async def test_cancel_by_session_ignores_already_done_tasks(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_run_subagent_no_duplication(tmp_path: Path) -> None:
+    """Verify _run_subagent passes correct user_message and empty message_history.
+
+    This ensures the subagent's system prompt doesn't leak through history —
+    the subagent gets its instructions via Agent.instructions, not via messages.
+    """
     captured: dict = {}
 
-    async def fake_run(user_message, message_history=None):
-        captured["user_message"] = user_message
-        captured["message_history"] = message_history or []
-        return '{"action": "skip"}', []
+    def capture(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        captured["messages"] = messages
+        return ModelResponse(parts=[TextPart(content='{"action": "done"}')])
 
-    subagent_mock = MagicMock()
-    subagent_mock.run = fake_run
+    # Build a real SubagentManager with a mock agent providing a FunctionModel
+    from nanobot.bus.queue import MessageBus
 
-    bus = MagicMock()
-    bus.publish = AsyncMock()
-    bus.publish_inbound = AsyncMock()
-
+    bus = MessageBus()
     agent = MagicMock()
-    agent.models = []
+    agent.models = [FunctionModel(capture)]
 
-    with patch.object(SubagentManager, "_build_subagent_agent", return_value=subagent_mock):
-        mgr = SubagentManager(
-            agent=agent,
-            workspace=tmp_path,
-            bus=bus,
-            max_tool_result_chars=16000,
-        )
-
-    await mgr._run_subagent(
-        task_id="sub-dedup-test",
-        task="do something important",
-        label="dedup test",
-        origin={"channel": "cli", "chat_id": "direct"},
+    mgr = SubagentManager(
+        agent=agent,
+        workspace=tmp_path,
+        bus=bus,
+        max_tool_result_chars=16000,
     )
 
-    assert captured["user_message"] == "do something important"
-    assert captured["message_history"] == []
+    # Override the subagent's pydantic_agent model to capture call arguments
+    with mgr._subagent.pydantic_agent.override(model=FunctionModel(capture)):
+        await mgr._run_subagent(
+            task_id="sub-dedup-test",
+            task="do something important",
+            label="dedup test",
+            origin={"channel": "cli", "chat_id": "direct"},
+        )
+
+    # Extract all UserPromptPart contents from captured messages
+    user_prompts = []
+    for msg in captured.get("messages", []):
+        if isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, UserPromptPart):
+                    content = part.content
+                    if isinstance(content, str):
+                        user_prompts.append(content)
+                    elif isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, str):
+                                user_prompts.append(item)
+
+    # Verify: exactly one user prompt with the task content, no history duplication
+    assert len(user_prompts) == 1, (
+        f"Expected 1 user prompt, got {len(user_prompts)}: {user_prompts}"
+    )
+    assert user_prompts[0] == "do something important"

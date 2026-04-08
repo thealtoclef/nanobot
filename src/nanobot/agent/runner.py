@@ -423,18 +423,16 @@ class AgentRunner:
             await self.memory_consolidator.maybe_consolidate_by_tokens(session)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             history = session.get_history(max_messages=0)
-            current_role = "assistant" if msg.sender_id == "subagent" else "user"
-            messages, raw_user_content = self.context.build_messages(
+            messages, prompt_content = self.context.build_messages(
                 history=history,
                 current_message=msg.content,
                 channel=channel,
                 chat_id=chat_id,
-                current_role=current_role,
                 session_key=session.key,
             )
             final_content, new_messages = await self._run_agent_loop(
                 messages,
-                user_content=raw_user_content,
+                user_content=prompt_content,
                 session=session,
                 channel=channel,
                 chat_id=chat_id,
@@ -471,7 +469,7 @@ class AgentRunner:
                 message_tool.start_turn()
 
         history = session.get_history(max_messages=0)
-        initial_messages, raw_user_content = self.context.build_messages(
+        initial_messages, prompt_content = self.context.build_messages(
             history=history,
             current_message=msg.content,
             media=msg.media if msg.media else None,
@@ -495,7 +493,7 @@ class AgentRunner:
 
         final_content, new_messages = await self._run_agent_loop(
             initial_messages,
-            user_content=raw_user_content,
+            user_content=prompt_content,
             session=session,
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -545,15 +543,16 @@ class AgentRunner:
         Returns:
             Tuple of (final_text, new_model_messages).
         """
-        from nanobot.agent.agent import session_messages_to_model_messages
+        from nanobot.agent.agent import session_messages_to_model_messages, _to_user_content
 
         await self._connect_mcp()
 
         model_messages = session_messages_to_model_messages(initial_messages)
+        prompt = _to_user_content(user_content) if isinstance(user_content, list) else user_content
 
         if on_stream is not None:
             async with self.agent.run_stream(
-                user_content,
+                prompt,
                 message_history=model_messages,
             ) as result:
                 async for delta in result.stream_text(delta=True):
@@ -565,7 +564,7 @@ class AgentRunner:
             return output, result.new_messages()
         else:
             output, new_messages = await self.agent.run(
-                user_content,
+                prompt,
                 message_history=model_messages,
             )
             return output, new_messages

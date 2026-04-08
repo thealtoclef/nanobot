@@ -77,23 +77,6 @@ Skills with available="false" need dependencies installed first - you can try in
             lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
         return ContextBuilder._RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines)
 
-    @staticmethod
-    def _merge_message_content(left: Any, right: Any) -> str | list[dict[str, Any]]:
-        if isinstance(left, str) and isinstance(right, str):
-            return f"{left}\n\n{right}" if left else right
-
-        def _to_blocks(value: Any) -> list[dict[str, Any]]:
-            if isinstance(value, list):
-                return [
-                    item if isinstance(item, dict) else {"type": "text", "text": str(item)}
-                    for item in value
-                ]
-            if value is None:
-                return []
-            return [{"type": "text", "text": str(value)}]
-
-        return _to_blocks(left) + _to_blocks(right)
-
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
         parts = []
@@ -114,14 +97,9 @@ Skills with available="false" need dependencies installed first - you can try in
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
-        current_role: str = "user",
         session_key: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | list[dict[str, Any]]]:
-        """Build the complete message list for an LLM call.
-
-        Returns (messages, raw_user_content) where raw_user_content is the
-        unmerged user text/media to pass to the PydanticAI agent separately.
-        """
+        """Build history + prompt. History excludes the current message to avoid duplication with PydanticAI's user_prompt."""
         runtime_ctx = self._build_runtime_context(channel, chat_id, self.timezone)
         user_content = self._build_user_content(current_message, media)
 
@@ -129,14 +107,15 @@ Skills with available="false" need dependencies installed first - you can try in
             merged = f"{runtime_ctx}\n\n{user_content}"
         else:
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
-        messages = [*history]
-        if messages and messages[-1].get("role") == current_role:
-            last = dict(messages[-1])
-            last["content"] = self._merge_message_content(last.get("content"), merged)
-            messages[-1] = last
-            return messages, user_content
-        messages.append({"role": current_role, "content": merged})
-        return messages, user_content
+
+        enriched_history = list(history)
+        if session_key:
+            store = MemoryStore(self._db, session_key)
+            memory_ctx = store.get_memory_context()
+            if memory_ctx:
+                enriched_history = [{"role": "system", "content": memory_ctx}, *enriched_history]
+
+        return enriched_history, merged
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""

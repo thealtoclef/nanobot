@@ -57,41 +57,43 @@ def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) ->
 
 
 def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
-    """Runtime metadata should be merged with the user message."""
+    """Runtime metadata should be merged with the user message (prompt_content), not in history."""
     workspace = _make_workspace(tmp_path)
     db = _make_db(tmp_path)
     builder = ContextBuilder(workspace, db)
 
-    messages, _ = builder.build_messages(
+    messages, prompt_content = builder.build_messages(
         history=[],
         current_message="Return exactly: OK",
         channel="cli",
         chat_id="direct",
     )
 
-    # Runtime context is merged with user message; no system message from build_messages
-    assert messages[-1]["role"] == "user"
-    user_content = messages[-1]["content"]
-    assert isinstance(user_content, str)
-    assert ContextBuilder._RUNTIME_CONTEXT_TAG in user_content
-    assert "Current Time:" in user_content
-    assert "Channel: cli" in user_content
-    assert "Chat ID: direct" in user_content
-    assert "Return exactly: OK" in user_content
+    # History is returned unchanged (no current message added)
+    assert messages == []
+    # Runtime context is in the prompt_content
+    assert ContextBuilder._RUNTIME_CONTEXT_TAG in prompt_content
+    assert "Current Time:" in prompt_content
+    assert "Channel: cli" in prompt_content
+    assert "Chat ID: direct" in prompt_content
+    assert "Return exactly: OK" in prompt_content
 
 
 def test_subagent_result_does_not_create_consecutive_assistant_messages(tmp_path) -> None:
+    """History should be returned unchanged; current message goes to prompt_content."""
     workspace = _make_workspace(tmp_path)
     db = _make_db(tmp_path)
     builder = ContextBuilder(workspace, db)
 
-    messages, _ = builder.build_messages(
+    messages, prompt_content = builder.build_messages(
         history=[{"role": "assistant", "content": "previous result"}],
         current_message="subagent result",
         channel="cli",
         chat_id="direct",
-        current_role="assistant",
     )
 
-    for left, right in zip(messages, messages[1:]):
-        assert not (left.get("role") == right.get("role") == "assistant")
+    # History returned unchanged
+    assert len(messages) == 1
+    assert messages[0]["role"] == "assistant"
+    # Current message goes to prompt_content, not into history
+    assert "subagent result" in prompt_content

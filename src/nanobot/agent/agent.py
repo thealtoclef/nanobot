@@ -18,6 +18,7 @@ from pydantic_ai.messages import (
     AgentStreamEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    ImageUrl,
     ModelMessage,
     ModelRequest,
     ModelResponse,
@@ -65,6 +66,29 @@ def build_instructions(workspace: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _to_user_content(
+    content: str | list[dict[str, Any]],
+) -> str | list[Any]:
+    """Convert session-stored content to PydanticAI-native UserContent items."""
+    if isinstance(content, str):
+        return content
+    parts: list[Any] = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append(str(block))
+            continue
+        if block.get("type") == "image_url":
+            url = (block.get("image_url") or {}).get("url", "")
+            if url:
+                parts.append(ImageUrl(url=url))
+            continue
+        if block.get("type") == "text":
+            parts.append(block.get("text", ""))
+            continue
+        parts.append(str(block))
+    return parts
+
+
 def session_messages_to_model_messages(
     session_messages: list[dict[str, Any]],
 ) -> list[ModelMessage]:
@@ -78,7 +102,7 @@ def session_messages_to_model_messages(
         if role == "system":
             result.append(ModelRequest(parts=[SystemPromptPart(content=content)]))
         elif role == "user":
-            result.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+            result.append(ModelRequest(parts=[UserPromptPart(content=_to_user_content(content))]))
         elif role == "assistant":
             tc = msg.get("tool_calls")
             if tc:
@@ -401,7 +425,7 @@ class NanobotAgent:
 
     async def run(
         self,
-        user_message: str,
+        user_message: str | list[Any],
         *,
         message_history: list[ModelMessage] | None = None,
     ) -> tuple[str, list[ModelMessage]]:
@@ -429,7 +453,7 @@ class NanobotAgent:
 
     def run_stream(
         self,
-        user_message: str,
+        user_message: str | list[Any],
         *,
         message_history: list[ModelMessage] | None = None,
     ):
@@ -451,7 +475,7 @@ class NanobotAgent:
 
     async def run_stream_events(
         self,
-        user_message: str,
+        user_message: str | list[Any],
         session: Any | None = None,
         *,
         message_history: list[ModelMessage] | None = None,

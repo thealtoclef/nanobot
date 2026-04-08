@@ -73,10 +73,7 @@ Respond ONLY with a JSON object with keys "action" (one of "skip" or "run") and 
 {{"action": "skip"}}  or  {{"action": "run", "tasks": "summary of active tasks"}}
 """
 
-        response = await self.agent.run(
-            user_message=prompt,
-            session=None,
-        )
+        response, _ = await self.agent.run(user_message=prompt)
 
         try:
             # Try to parse as JSON first
@@ -158,7 +155,7 @@ Suppress when the response is a routine status check, confirmation that everythi
 or essentially empty."""
 
         try:
-            result = await self.agent.run(user_message=prompt, session=None)
+            result, _ = await self.agent.run(user_message=prompt)
             parsed = json.loads(result.strip())
             should_notify = bool(parsed.get("should_notify", True))
             reason = parsed.get("reason", "")

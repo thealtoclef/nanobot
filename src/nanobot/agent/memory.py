@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import weakref
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, cast
@@ -228,8 +227,8 @@ class MemoryConsolidator:
         self.context_window_tokens = context_window_tokens
         self.max_completion_tokens = max_completion_tokens
         self._build_messages = build_messages
-        self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
-        self._stores: weakref.WeakValueDictionary[str, MemoryStore] = weakref.WeakValueDictionary()
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._stores: dict[str, MemoryStore] = {}
 
     def get_lock(self, session_key: str) -> asyncio.Lock:
         """Return the shared consolidation lock for one session."""
