@@ -16,7 +16,7 @@ class Session(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     key: str
-    last_consolidated_message_id: int | None = None
+    current_history_id: int | None = None
     created_at: pendulum.DateTime
     updated_at: pendulum.DateTime
 
@@ -30,7 +30,7 @@ class SessionManager:
         """Convert SessionRow to Session Pydantic model."""
         return Session(
             key=row.key,
-            last_consolidated_message_id=row.last_consolidated_message_id,
+            current_history_id=row.current_history_id,
             created_at=pendulum.from_timestamp(row.created_at / 1000.0, tz="UTC"),
             updated_at=pendulum.from_timestamp(row.updated_at / 1000.0, tz="UTC"),
         )
@@ -57,12 +57,11 @@ class SessionManager:
 
     def get_unconsolidated_messages(self, session_key: str) -> list[ModelMessage]:
         """Get messages where id > last_consolidated_message_id."""
-        row = self._db.get_session_row(session_key)
-        if row is None:
-            return []
-        rows = self._db.get_unconsolidated_message_blobs(
-            session_key, row.last_consolidated_message_id
-        )
+        boundary = self._db.get_summarized_through_message_id(session_key)
+        if boundary is None:
+            rows = self._db.get_unconsolidated_message_blobs(session_key, None)
+        else:
+            rows = self._db.get_unconsolidated_message_blobs(session_key, boundary)
         result: list[ModelMessage] = []
         for row in rows:
             msgs = ModelMessagesTypeAdapter.validate_json(row.messages_json)
@@ -73,12 +72,11 @@ class SessionManager:
         self, session_key: str
     ) -> list[tuple[int, list[ModelMessage]]]:
         """Get unconsolidated blobs as (row_id, messages) pairs."""
-        row = self._db.get_session_row(session_key)
-        if row is None:
-            return []
-        rows = self._db.get_unconsolidated_message_blobs(
-            session_key, row.last_consolidated_message_id
-        )
+        boundary = self._db.get_summarized_through_message_id(session_key)
+        if boundary is None:
+            rows = self._db.get_unconsolidated_message_blobs(session_key, None)
+        else:
+            rows = self._db.get_unconsolidated_message_blobs(session_key, boundary)
         result: list[tuple[int, list[ModelMessage]]] = []
         for row in rows:
             msgs = ModelMessagesTypeAdapter.validate_json(row.messages_json)
@@ -97,13 +95,17 @@ class SessionManager:
         blob = ModelMessagesTypeAdapter.dump_json(messages)
         return self._db.add_message_blob(session_key, blob)
 
-    def update_last_consolidated_message_id(self, session_key: str, message_id: int) -> None:
+    def update_current_history_id(self, session_key: str, history_id: int) -> None:
         """Update consolidation boundary."""
-        self._db.update_last_consolidated_message_id(session_key, message_id)
+        self._db.update_current_history_id(session_key, history_id)
 
     def delete_all_messages(self, session_key: str) -> None:
         """Delete all messages. Resets consolidation boundary."""
         self._db.delete_all_messages(session_key)
+
+    def clear_session_for_new(self, session_key: str) -> None:
+        """For /new command: delete messages, clear history pointer, keep facts."""
+        self._db.clear_session_for_new(session_key)
 
     def touch(self, session_key: str) -> None:
         """Update updated_at."""

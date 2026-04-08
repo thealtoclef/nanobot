@@ -1,10 +1,11 @@
-"""Consolidation tests using PydanticAI's TestModel.
+"""Summarizer and Extractor agent tests using PydanticAI's TestModel.
 
-Exercises the real ``_consolidation_agent`` with
+Exercises the real ``_summarizer_agent`` and ``_extractor_agent`` with
 ``agent.override(model=TestModel(...))`` — no patching of ``agent.run``.
-Validates that ``output_type=ConsolidationResult`` produces correct structured
-output, ``deps_type=ConsolidationDeps`` is injected into instructions, and the
-consolidation flow works end-to-end with a deterministic model substitute.
+Validates that ``output_type=SummarizerResult`` and ``ExtractorResult``
+produce correct structured output, ``deps_type`` is injected into
+instructions, and the summarization flow works end-to-end with a
+deterministic model substitute.
 """
 
 from __future__ import annotations
@@ -13,25 +14,29 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic_ai.models.test import TestModel
-
-from nanobot.agent.memory import (
-    ConsolidationDeps,
-    ConsolidationResult,
-    MemoryStore,
-    _consolidation_agent,
-    _INITIAL_MEMORY_TEMPLATE,
-)
-from nanobot.db import Database, upgrade_db
 from pydantic_ai.messages import (
+    ModelMessage,
     ModelRequest,
     ModelResponse,
     UserPromptPart,
     TextPart,
 )
+from pydantic_ai.models.test import TestModel
+
+from nanobot.agent.memory import (
+    SummarizerDeps,
+    SummarizerResult,
+    ExtractorDeps,
+    ExtractorResult,
+    HistoryStore,
+    HistorySummarizer,
+    _summarizer_agent,
+    _extractor_agent,
+)
+from nanobot.db import Database, upgrade_db
 
 
-def _make_model_messages(count: int = 5) -> list:
+def _make_model_messages(count: int = 5) -> list[ModelMessage]:
     """Create ModelMessage list for testing."""
     messages = []
     for i in range(count):
@@ -42,48 +47,24 @@ def _make_model_messages(count: int = 5) -> list:
     return messages
 
 
-def _model_messages_to_dicts(messages: list) -> list[dict]:
-    """Convert ModelMessage list to dicts for MemoryStore.consolidate."""
-    result = []
-    for msg in messages:
-        if isinstance(msg, ModelRequest):
-            for part in msg.parts:
-                if isinstance(part, UserPromptPart):
-                    result.append(
-                        {
-                            "role": "user",
-                            "content": part.content,
-                            "timestamp": f"2026-04-08T10:{len(result):02d}:00",
-                            "tools_used": [],
-                        }
-                    )
-        elif isinstance(msg, ModelResponse):
-            for part in msg.parts:
-                if isinstance(part, TextPart):
-                    result.append(
-                        {
-                            "role": "assistant",
-                            "content": part.content,
-                            "timestamp": f"2026-04-08T10:{len(result):02d}:00",
-                            "tools_used": [],
-                        }
-                    )
-    return result
-
-
-def _consolidation_test_model(
-    history_entry: str = "[2026-04-08 10:00] Test consolidation.",
-    memory_update: str = "# Memory\nConsolidated.",
-) -> TestModel:
+def _summarizer_test_model(summary: str = "[2026-04-09 10:00] Test summary.") -> TestModel:
     return TestModel(
-        custom_output_args={
-            "history_entry": history_entry,
-            "memory_update": memory_update,
-        },
+        custom_output_args={"summary": summary},
     )
 
 
-_EMPTY_DEPS = ConsolidationDeps(current_memory="", session_messages=[])
+def _extractor_test_model(
+    facts: list[dict] | None = None,
+) -> TestModel:
+    if facts is None:
+        facts = [{"content": "User likes testing", "category": "preference"}]
+    return TestModel(
+        custom_output_args={"facts": facts},
+    )
+
+
+_EMPTY_SUMMARIZER_DEPS = SummarizerDeps(existing_summary="", formatted_messages="")
+_EMPTY_EXTRACTOR_DEPS = ExtractorDeps(formatted_messages="", existing_facts="")
 
 
 @pytest.fixture
@@ -104,236 +85,224 @@ def mock_agent() -> MagicMock:
     return mock
 
 
-class TestConsolidationResultOutput:
-    """Verify TestModel produces ConsolidationResult through the agent."""
+# ---------------------------------------------------------------------------
+# TestSummarizerResultOutput
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizerResultOutput:
+    """Verify TestModel produces SummarizerResult through the agent."""
 
     @pytest.mark.asyncio
-    async def test_returns_consolidation_result_type(self) -> None:
-        tm = _consolidation_test_model()
-        with _consolidation_agent.override(model=tm):
-            result = await _consolidation_agent.run(user_prompt="test", model=tm, deps=_EMPTY_DEPS)
-        assert isinstance(result.output, ConsolidationResult)
-
-    @pytest.mark.asyncio
-    async def test_history_entry_field_parsed(self) -> None:
-        expected = "[2026-04-08 12:00] User discussed testing patterns."
-        tm = _consolidation_test_model(history_entry=expected)
-        with _consolidation_agent.override(model=tm):
-            result = await _consolidation_agent.run(user_prompt="test", model=tm, deps=_EMPTY_DEPS)
-        assert result.output.history_entry == expected
-
-    @pytest.mark.asyncio
-    async def test_memory_update_field_parsed(self) -> None:
-        expected = "# Memory\n- Fact A\n- Fact B"
-        tm = _consolidation_test_model(memory_update=expected)
-        with _consolidation_agent.override(model=tm):
-            result = await _consolidation_agent.run(user_prompt="test", model=tm, deps=_EMPTY_DEPS)
-        assert result.output.memory_update == expected
-
-    @pytest.mark.asyncio
-    async def test_both_fields_populated(self) -> None:
-        tm = _consolidation_test_model(
-            history_entry="[2026-04-08 10:00] Multi-field test.",
-            memory_update="# Memory\nMulti.",
-        )
-        with _consolidation_agent.override(model=tm):
-            result = await _consolidation_agent.run(user_prompt="test", model=tm, deps=_EMPTY_DEPS)
-        output = result.output
-        assert output.history_entry == "[2026-04-08 10:00] Multi-field test."
-        assert output.memory_update == "# Memory\nMulti."
-
-
-class TestConsolidationDepsInjection:
-    """Verify deps are injected into the agent's dynamic instructions."""
-
-    @pytest.mark.asyncio
-    async def test_current_memory_passed(self) -> None:
-        tm = _consolidation_test_model()
-        deps = ConsolidationDeps(
-            current_memory="# Memory\nExisting fact.",
-            session_messages=[],
-        )
-        with _consolidation_agent.override(model=tm):
-            result = await _consolidation_agent.run(user_prompt="test", model=tm, deps=deps)
-        assert isinstance(result.output, ConsolidationResult)
-
-    @pytest.mark.asyncio
-    async def test_session_messages_passed(self) -> None:
-        messages = _model_messages_to_dicts(_make_model_messages(3))
-        tm = _consolidation_test_model()
-        deps = ConsolidationDeps(current_memory="", session_messages=messages)
-        with _consolidation_agent.override(model=tm):
-            result = await _consolidation_agent.run(user_prompt="test", model=tm, deps=deps)
-        assert isinstance(result.output, ConsolidationResult)
-
-    @pytest.mark.asyncio
-    async def test_both_deps_fields(self) -> None:
-        tm = _consolidation_test_model()
-        deps = ConsolidationDeps(
-            current_memory="# Memory\nUser prefers dark mode.",
-            session_messages=_model_messages_to_dicts(_make_model_messages(5)),
-        )
-        with _consolidation_agent.override(model=tm):
-            result = await _consolidation_agent.run(user_prompt="test", model=tm, deps=deps)
-        assert isinstance(result.output, ConsolidationResult)
-
-    @pytest.mark.asyncio
-    async def test_empty_deps(self) -> None:
-        tm = _consolidation_test_model()
-        deps = ConsolidationDeps(current_memory="", session_messages=[])
-        with _consolidation_agent.override(model=tm):
-            result = await _consolidation_agent.run(user_prompt="test", model=tm, deps=deps)
-        assert isinstance(result.output, ConsolidationResult)
-
-
-class TestConsolidationFlowWithTestModel:
-    """End-to-end consolidation via MemoryStore using TestModel override."""
-
-    @pytest.mark.asyncio
-    async def test_writes_history(self, db: Database, mock_agent: MagicMock) -> None:
-        store = MemoryStore(db, "session:test")
-        tm = _consolidation_test_model(
-            history_entry="[2026-04-08 10:00] Discussed testing.",
-            memory_update="# Memory\nTesting topic.",
-        )
-
-        with _consolidation_agent.override(model=tm):
-            mock_agent.pydantic_agent.model = tm
-            result = await store.consolidate(
-                _model_messages_to_dicts(_make_model_messages(3)), mock_agent
+    async def test_returns_summarizer_result_type(self) -> None:
+        tm = _summarizer_test_model()
+        with _summarizer_agent.override(model=tm):
+            result = await _summarizer_agent.run(
+                user_prompt="Summarize the conversation.", model=tm, deps=_EMPTY_SUMMARIZER_DEPS
             )
+        assert isinstance(result.output, SummarizerResult)
+
+    @pytest.mark.asyncio
+    async def test_summary_field_parsed(self) -> None:
+        expected = "[2026-04-09 12:00] User discussed new features."
+        tm = _summarizer_test_model(summary=expected)
+        with _summarizer_agent.override(model=tm):
+            result = await _summarizer_agent.run(
+                user_prompt="Summarize.", model=tm, deps=_EMPTY_SUMMARIZER_DEPS
+            )
+        assert result.output.summary == expected
+
+    @pytest.mark.asyncio
+    async def test_empty_summary(self) -> None:
+        tm = _summarizer_test_model(summary="   ")
+        with _summarizer_agent.override(model=tm):
+            result = await _summarizer_agent.run(
+                user_prompt="Summarize.", model=tm, deps=_EMPTY_SUMMARIZER_DEPS
+            )
+        assert result.output.summary.strip() == ""
+
+    @pytest.mark.asyncio
+    async def test_timestamp_prefix(self) -> None:
+        """Summary should start with a timestamp."""
+        tm = _summarizer_test_model(summary="[2026-04-09 14:00] Discussion of tests.")
+        with _summarizer_agent.override(model=tm):
+            result = await _summarizer_agent.run(
+                user_prompt="Summarize.", model=tm, deps=_EMPTY_SUMMARIZER_DEPS
+            )
+        assert result.output.summary.startswith("[2026-04-09")
+
+
+# ---------------------------------------------------------------------------
+# TestExtractorResultOutput
+# ---------------------------------------------------------------------------
+
+
+class TestExtractorResultOutput:
+    """Verify TestModel produces ExtractorResult with facts list through the agent."""
+
+    @pytest.mark.asyncio
+    async def test_returns_extractor_result_type(self) -> None:
+        tm = _extractor_test_model()
+        with _extractor_agent.override(model=tm):
+            result = await _extractor_agent.run(
+                user_prompt="Extract facts.", model=tm, deps=_EMPTY_EXTRACTOR_DEPS
+            )
+        assert isinstance(result.output, ExtractorResult)
+
+    @pytest.mark.asyncio
+    async def test_facts_list_parsed(self) -> None:
+        facts = [
+            {"content": "User prefers dark mode", "category": "preference"},
+            {"content": "User works as a developer", "category": "fact"},
+        ]
+        tm = _extractor_test_model(facts=facts)
+        with _extractor_agent.override(model=tm):
+            result = await _extractor_agent.run(
+                user_prompt="Extract facts.", model=tm, deps=_EMPTY_EXTRACTOR_DEPS
+            )
+        assert len(result.output.facts) == 2
+        assert result.output.facts[0].content == "User prefers dark mode"
+        assert result.output.facts[0].category == "preference"
+        assert result.output.facts[1].content == "User works as a developer"
+        assert result.output.facts[1].category == "fact"
+
+    @pytest.mark.asyncio
+    async def test_empty_facts_list(self) -> None:
+        tm = _extractor_test_model(facts=[])
+        with _extractor_agent.override(model=tm):
+            result = await _extractor_agent.run(
+                user_prompt="Extract facts.", model=tm, deps=_EMPTY_EXTRACTOR_DEPS
+            )
+        assert result.output.facts == []
+
+    @pytest.mark.asyncio
+    async def test_facts_have_content_and_category(self) -> None:
+        facts = [{"content": "User loves coffee", "category": "preference"}]
+        tm = _extractor_test_model(facts=facts)
+        with _extractor_agent.override(model=tm):
+            result = await _extractor_agent.run(
+                user_prompt="Extract facts.", model=tm, deps=_EMPTY_EXTRACTOR_DEPS
+            )
+        assert all(hasattr(f, "content") and hasattr(f, "category") for f in result.output.facts)
+
+
+# ---------------------------------------------------------------------------
+# TestSummarizationFlowWithTestModel
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizationFlowWithTestModel:
+    """End-to-end summarization via HistorySummarizer using TestModel override."""
+
+    @pytest.mark.asyncio
+    async def test_writes_history_row(self, db: Database, mock_agent: MagicMock) -> None:
+        sessions_mock = MagicMock()
+        sessions_mock.get_unconsolidated_blobs_with_ids.return_value = []
+        sessions_mock.update_current_history_id = MagicMock()
+
+        summarizer = HistorySummarizer(
+            db=db,
+            agent=mock_agent,
+            sessions=sessions_mock,
+            context_window_tokens=100,
+        )
+        tm = _summarizer_test_model(summary="[2026-04-09 10:00] User discussed testing patterns.")
+        mock_agent.pydantic_agent.model = tm
+
+        messages = _make_model_messages(3)
+        with _summarizer_agent.override(model=tm):
+            result = await summarizer.summarize_messages("session:test", messages)
 
         assert result is True
-        history = db.get_recent_history("session:test", limit=5)
-        assert len(history) == 1
-        assert "Discussed testing" in history[0]
+        histories = db.get_all_histories("session:test")
+        assert len(histories) == 1
+        assert "discussed testing" in histories[0].summary.lower()
 
     @pytest.mark.asyncio
-    async def test_updates_long_term_memory(self, db: Database, mock_agent: MagicMock) -> None:
-        store = MemoryStore(db, "session:test")
-        tm = _consolidation_test_model(
-            history_entry="[2026-04-08 10:00] Summary.",
-            memory_update="# Memory\nUpdated fact.",
-        )
-
-        with _consolidation_agent.override(model=tm):
-            mock_agent.pydantic_agent.model = tm
-            await store.consolidate(_model_messages_to_dicts(_make_model_messages(2)), mock_agent)
-
-        curated = db.get_curated_memory("session:test")
-        assert curated is not None
-        assert "Updated fact" in curated
-
-    @pytest.mark.asyncio
-    async def test_seeds_template_on_empty_memory(
+    async def test_updates_session_current_history_id(
         self, db: Database, mock_agent: MagicMock
     ) -> None:
-        store = MemoryStore(db, "session:test")
-        assert store.read_long_term() == ""
+        sessions_mock = MagicMock()
+        sessions_mock.get_unconsolidated_blobs_with_ids.return_value = []
+        sessions_mock.update_current_history_id = MagicMock()
 
-        tm = _consolidation_test_model(
-            history_entry="[2026-04-08 10:00] First consolidation.",
-            memory_update=_INITIAL_MEMORY_TEMPLATE + "\n## Notes\nFirst run.",
+        summarizer = HistorySummarizer(
+            db=db,
+            agent=mock_agent,
+            sessions=sessions_mock,
+            context_window_tokens=100,
         )
+        tm = _summarizer_test_model(summary="[2026-04-09 10:00] Summary.")
+        mock_agent.pydantic_agent.model = tm
 
-        with _consolidation_agent.override(model=tm):
-            mock_agent.pydantic_agent.model = tm
-            result = await store.consolidate(
-                _model_messages_to_dicts(_make_model_messages(2)), mock_agent
-            )
+        messages = _make_model_messages(3)
+        with _summarizer_agent.override(model=tm):
+            await summarizer.summarize_messages("session:test", messages)
 
-        assert result is True
-        assert db.get_curated_memory("session:test") is not None
+        sessions_mock.update_current_history_id.assert_called_once()
+        call_args = sessions_mock.update_current_history_id.call_args
+        assert call_args[0][0] == "session:test"
+        assert isinstance(call_args[0][1], int)
 
     @pytest.mark.asyncio
-    async def test_preserves_memory_when_update_equals_current(
-        self, db: Database, mock_agent: MagicMock
-    ) -> None:
-        store = MemoryStore(db, "session:test")
-        original = "# Memory\nOriginal fact."
-        store.write_long_term(original)
+    async def test_incorporates_existing_summary(self, db: Database, mock_agent: MagicMock) -> None:
+        # Pre-populate with a summary
+        store = HistoryStore(db, "session:test")
+        store.add("Previous summary content.", None)
 
-        tm = _consolidation_test_model(
-            history_entry="[2026-04-08 10:00] No changes.",
-            memory_update=original,
+        sessions_mock = MagicMock()
+        sessions_mock.get_unconsolidated_blobs_with_ids.return_value = []
+        sessions_mock.update_current_history_id = MagicMock()
+
+        summarizer = HistorySummarizer(
+            db=db,
+            agent=mock_agent,
+            sessions=sessions_mock,
+            context_window_tokens=100,
         )
+        tm = _summarizer_test_model(summary="[2026-04-09 11:00] Updated with new info.")
+        mock_agent.pydantic_agent.model = tm
 
-        with _consolidation_agent.override(model=tm):
-            mock_agent.pydantic_agent.model = tm
-            result = await store.consolidate(
-                _model_messages_to_dicts(_make_model_messages(2)), mock_agent
-            )
+        messages = _make_model_messages(2)
+        with _summarizer_agent.override(model=tm):
+            await summarizer.summarize_messages("session:test", messages)
 
-        assert result is True
-        assert store.read_long_term() == original
+        histories = db.get_all_histories("session:test")
+        assert len(histories) == 2
+        # New summary should be there
+        assert "Updated with new info" in histories[1].summary
 
     @pytest.mark.asyncio
-    async def test_empty_memory_update_keeps_existing(
-        self, db: Database, mock_agent: MagicMock
-    ) -> None:
-        store = MemoryStore(db, "session:test")
-        store.write_long_term("# Memory\nExisting content.")
+    async def test_resets_consecutive_failures(self, db: Database, mock_agent: MagicMock) -> None:
+        sessions_mock = MagicMock()
+        sessions_mock.get_unconsolidated_blobs_with_ids.return_value = []
+        sessions_mock.update_current_history_id = MagicMock()
 
-        tm = _consolidation_test_model(
-            history_entry="[2026-04-08 10:00] History only.",
-            memory_update="",
+        summarizer = HistorySummarizer(
+            db=db,
+            agent=mock_agent,
+            sessions=sessions_mock,
+            context_window_tokens=100,
         )
+        # Simulate prior failures
+        summarizer._consecutive_failures["session:test"] = 2
 
-        with _consolidation_agent.override(model=tm):
-            mock_agent.pydantic_agent.model = tm
-            result = await store.consolidate(
-                _model_messages_to_dicts(_make_model_messages(2)), mock_agent
-            )
+        tm = _summarizer_test_model(summary="[2026-04-09 10:00] Recovery.")
+        mock_agent.pydantic_agent.model = tm
 
-        assert result is True
-        assert "Existing content" in store.read_long_term()
+        messages = _make_model_messages(2)
+        with _summarizer_agent.override(model=tm):
+            await summarizer.summarize_messages("session:test", messages)
 
-    @pytest.mark.asyncio
-    async def test_resets_failure_counter(self, db: Database, mock_agent: MagicMock) -> None:
-        store = MemoryStore(db, "session:test")
-        store._consecutive_failures = 2
-
-        tm = _consolidation_test_model()
-        with _consolidation_agent.override(model=tm):
-            mock_agent.pydantic_agent.model = tm
-            result = await store.consolidate(
-                _model_messages_to_dicts(_make_model_messages(2)), mock_agent
-            )
-
-        assert result is True
-        assert store._consecutive_failures == 0
-
-    @pytest.mark.asyncio
-    async def test_multiple_rounds_accumulate_history(
-        self, db: Database, mock_agent: MagicMock
-    ) -> None:
-        store = MemoryStore(db, "session:test")
-        tm1 = _consolidation_test_model(
-            history_entry="[2026-04-08 10:00] Round 1.",
-            memory_update="# Memory\nRound 1 memory.",
-        )
-        tm2 = _consolidation_test_model(
-            history_entry="[2026-04-08 11:00] Round 2.",
-            memory_update="# Memory\nRound 1 + 2 memory.",
-        )
-
-        with _consolidation_agent.override(model=tm1):
-            mock_agent.pydantic_agent.model = tm1
-            await store.consolidate(_model_messages_to_dicts(_make_model_messages(3)), mock_agent)
-
-        with _consolidation_agent.override(model=tm2):
-            mock_agent.pydantic_agent.model = tm2
-            await store.consolidate(_model_messages_to_dicts(_make_model_messages(3)), mock_agent)
-
-        history = db.get_recent_history("session:test", limit=10)
-        assert len(history) == 2
-        assert "Round 1" in history[0]
-        assert "Round 2" in history[1]
+        assert summarizer._consecutive_failures.get("session:test", 0) == 0
 
     @pytest.mark.asyncio
     async def test_usage_tracked(self) -> None:
-        tm = _consolidation_test_model()
-        with _consolidation_agent.override(model=tm):
-            result = await _consolidation_agent.run(user_prompt="test", model=tm, deps=_EMPTY_DEPS)
+        """Verify usage is tracked after agent run."""
+        tm = _summarizer_test_model()
+        with _summarizer_agent.override(model=tm):
+            result = await _summarizer_agent.run(
+                user_prompt="Summarize.", model=tm, deps=_EMPTY_SUMMARIZER_DEPS
+            )
         usage = result.usage()
         assert usage.requests >= 1

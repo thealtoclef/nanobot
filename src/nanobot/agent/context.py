@@ -15,7 +15,6 @@ from pydantic_ai.messages import (
 from nanobot.utils.helpers import current_time_str
 
 from nanobot.db import Database
-from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.utils.helpers import build_assistant_message, detect_image_mime
 
@@ -43,10 +42,10 @@ class ContextBuilder:
             parts.append(bootstrap)
 
         if session_key:
-            store = MemoryStore(self._db, session_key)
-            memory = store.get_memory_context()
-            if memory:
-                parts.append(f"# Memory\n\n{memory}")
+            # Inject compact fact digest for discoverability
+            fact_digest = self._db.get_fact_digest(session_key)
+            if fact_digest:
+                parts.append(fact_digest)
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
@@ -116,11 +115,10 @@ Skills with available="false" need dependencies installed first - you can try in
 
         enriched_history = list(history)
         if session_key:
-            store = MemoryStore(self._db, session_key)
-            memory_ctx = store.get_memory_context()
-            if memory_ctx:
+            summary = self._db.get_latest_history_summary(session_key)
+            if summary:
                 enriched_history = [
-                    ModelRequest(parts=[SystemPromptPart(content=memory_ctx)]),
+                    ModelRequest(parts=[SystemPromptPart(content=summary)]),
                     *enriched_history,
                 ]
 

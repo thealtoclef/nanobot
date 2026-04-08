@@ -27,7 +27,7 @@ class TestDatabase:
         row = db.get_session_row("test-session")
         assert row is not None
         assert row.key == "test-session"
-        assert row.last_consolidated_message_id is None
+        assert row.current_history_id is None
 
     def test_ensure_session_idempotent(self, tmp_path: Path) -> None:
         """ensure_session is idempotent - calling twice doesn't error."""
@@ -81,17 +81,23 @@ class TestDatabase:
             blob = ModelMessagesTypeAdapter.dump_json([msg])
             db.add_message_blob("test-session", blob)
 
-        # Consolidate first two messages
-        db.update_last_consolidated_message_id("test-session", 2)
+        # Create a history entry and set it as current
+        history_id = db.add_history("test-session", "Summary of first two messages", 2)
+        db.update_current_history_id("test-session", history_id)
 
         # Should only get message 3
-        unconsolidated = db.get_unconsolidated_message_blobs("test-session", 2)
+        summarized_through = db.get_summarized_through_message_id("test-session")
+        assert summarized_through == 2
+
+        unconsolidated = db.get_unconsolidated_message_blobs("test-session", summarized_through)
         assert len(unconsolidated) == 1
         assert unconsolidated[0].id == 3
 
         # Consolidate all
-        db.update_last_consolidated_message_id("test-session", 3)
-        unconsolidated = db.get_unconsolidated_message_blobs("test-session", 3)
+        history_id_all = db.add_history("test-session", "Summary of all messages", 3)
+        db.update_current_history_id("test-session", history_id_all)
+        summarized_through = db.get_summarized_through_message_id("test-session")
+        unconsolidated = db.get_unconsolidated_message_blobs("test-session", summarized_through)
         assert len(unconsolidated) == 0
 
     def test_delete_all_messages(self, tmp_path: Path) -> None:
@@ -105,7 +111,8 @@ class TestDatabase:
             blob = ModelMessagesTypeAdapter.dump_json([msg])
             db.add_message_blob("test-session", blob)
 
-        db.update_last_consolidated_message_id("test-session", 2)
+        history_id = db.add_history("test-session", "Summary", 2)
+        db.update_current_history_id("test-session", history_id)
         db.delete_all_messages("test-session")
 
         rows = db.get_message_blobs("test-session")
@@ -113,7 +120,7 @@ class TestDatabase:
 
         row = db.get_session_row("test-session")
         assert row is not None
-        assert row.last_consolidated_message_id is None
+        assert row.current_history_id is None
 
     def test_touch_session_updates_timestamp(self, tmp_path: Path) -> None:
         """touch_session updates the updated_at timestamp."""
@@ -254,3 +261,251 @@ class TestConcurrentAccess:
 
         rows = db.get_message_blobs("mixed-session")
         assert len(rows) == n_threads // 2  # Half are append workers
+
+
+class TestHistoryAndFacts:
+    def test_add_history(self, tmp_path: Path) -> None:
+        """Can add a history entry and retrieve it."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        # Add some messages first
+        for i in range(3):
+            msg = ModelRequest(parts=[UserPromptPart(content=f"msg{i}")])
+            blob = ModelMessagesTypeAdapter.dump_json([msg])
+            db.add_message_blob("test-session", blob)
+
+        # Add history
+        history_id = db.add_history("test-session", "Conversation summary", 3)
+        assert history_id == 1
+
+        # Link history to session
+        db.update_current_history_id("test-session", history_id)
+
+        # Verify via get_current_history_row
+        history = db.get_current_history_row("test-session")
+        assert history is not None
+        assert history.id == history_id
+        assert history.summary == "Conversation summary"
+        assert history.summarized_through_message_id == 3
+
+    def test_get_summarized_through_message_id(self, tmp_path: Path) -> None:
+        """get_summarized_through_message_id returns correct value."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        for i in range(5):
+            msg = ModelRequest(parts=[UserPromptPart(content=f"msg{i}")])
+            blob = ModelMessagesTypeAdapter.dump_json([msg])
+            db.add_message_blob("test-session", blob)
+
+        # No history yet
+        assert db.get_summarized_through_message_id("test-session") is None
+
+        # Add history through message 3
+        history_id = db.add_history("test-session", "Summary 1", 3)
+        db.update_current_history_id("test-session", history_id)
+        assert db.get_summarized_through_message_id("test-session") == 3
+
+        # Add another history through message 5
+        history_id2 = db.add_history("test-session", "Summary 2", 5)
+        db.update_current_history_id("test-session", history_id2)
+        assert db.get_summarized_through_message_id("test-session") == 5
+
+    def test_get_latest_history_summary(self, tmp_path: Path) -> None:
+        """get_latest_history_summary returns current history's summary."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        # Add some messages first
+        for i in range(5):
+            msg = ModelRequest(parts=[UserPromptPart(content=f"msg{i}")])
+            blob = ModelMessagesTypeAdapter.dump_json([msg])
+            db.add_message_blob("test-session", blob)
+
+        # No history yet
+        assert db.get_latest_history_summary("test-session") is None
+
+        # Add first history
+        history_id = db.add_history("test-session", "First summary", 2)
+        db.update_current_history_id("test-session", history_id)
+        assert db.get_latest_history_summary("test-session") == "First summary"
+
+        # Add second history
+        history_id2 = db.add_history("test-session", "Second summary", 4)
+        db.update_current_history_id("test-session", history_id2)
+        assert db.get_latest_history_summary("test-session") == "Second summary"
+
+    def test_get_all_histories(self, tmp_path: Path) -> None:
+        """get_all_histories returns all history rows ordered by id."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        for i in range(4):
+            msg = ModelRequest(parts=[UserPromptPart(content=f"msg{i}")])
+            blob = ModelMessagesTypeAdapter.dump_json([msg])
+            db.add_message_blob("test-session", blob)
+
+        # Add multiple histories
+        h1 = db.add_history("test-session", "Summary 1", 2)
+        h2 = db.add_history("test-session", "Summary 2", 3)
+        h3 = db.add_history("test-session", "Summary 3", 4)
+
+        histories = db.get_all_histories("test-session")
+        assert len(histories) == 3
+        assert histories[0].id == h1
+        assert histories[0].summary == "Summary 1"
+        assert histories[1].id == h2
+        assert histories[2].id == h3
+
+    def test_add_fact(self, tmp_path: Path) -> None:
+        """Can add a single fact and retrieve it."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        fact_id = db.add_fact("test-session", "User prefers dark mode", "preference")
+        assert fact_id == 1
+
+        facts = db.get_facts("test-session")
+        assert len(facts) == 1
+        assert facts[0].content == "User prefers dark mode"
+        assert facts[0].category == "preference"
+
+    def test_add_facts_bulk(self, tmp_path: Path) -> None:
+        """add_facts bulk inserts multiple facts."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        facts = [
+            ("User is admin", "role"),
+            ("Theme is dark", "preference"),
+            ("Email is test@example.com", "contact"),
+        ]
+        db.add_facts("test-session", facts)
+
+        retrieved = db.get_facts("test-session")
+        assert len(retrieved) == 3
+        assert retrieved[0].content == "User is admin"
+        assert retrieved[0].category == "role"
+        assert retrieved[1].content == "Theme is dark"
+        assert retrieved[1].category == "preference"
+        assert retrieved[2].content == "Email is test@example.com"
+        assert retrieved[2].category == "contact"
+
+    def test_add_facts_empty_list(self, tmp_path: Path) -> None:
+        """add_facts with empty list does nothing."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        db.add_facts("test-session", [])
+        assert len(db.get_facts("test-session")) == 0
+
+    def test_get_fact_digest(self, tmp_path: Path) -> None:
+        """get_fact_digest builds correct formatted string."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        facts = [
+            ("Likes pizza", "food"),
+            ("Allergic to nuts", "health"),
+        ]
+        db.add_facts("test-session", facts)
+
+        digest = db.get_fact_digest("test-session")
+        assert "## Known Facts" in digest
+        assert "[food] Likes pizza" in digest
+        assert "[health] Allergic to nuts" in digest
+
+    def test_get_fact_digest_truncation(self, tmp_path: Path) -> None:
+        """get_fact_digest truncates at max_tokens * 4 chars."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        # Add a long fact
+        long_content = "x" * 1000
+        db.add_fact("test-session", long_content, "test")
+
+        digest = db.get_fact_digest("test-session", max_tokens=10)
+        # max_tokens=10 means max 40 chars
+        assert len(digest) <= 43  # 40 + len("...") + header
+
+    def test_get_fact_digest_empty(self, tmp_path: Path) -> None:
+        """get_fact_digest returns empty string when no facts."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        digest = db.get_fact_digest("test-session")
+        assert digest == ""
+
+    def test_clear_session_for_new(self, tmp_path: Path) -> None:
+        """clear_session_for_new deletes messages and resets history but keeps facts."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        # Add messages
+        for i in range(3):
+            msg = ModelRequest(parts=[UserPromptPart(content=f"msg{i}")])
+            blob = ModelMessagesTypeAdapter.dump_json([msg])
+            db.add_message_blob("test-session", blob)
+
+        # Add history
+        history_id = db.add_history("test-session", "Old summary", 3)
+        db.update_current_history_id("test-session", history_id)
+
+        # Add facts
+        db.add_facts("test-session", [("Some fact", "test")])
+
+        # Clear session
+        db.clear_session_for_new("test-session")
+
+        # Messages should be gone
+        assert len(db.get_message_blobs("test-session")) == 0
+
+        # History should be reset
+        assert db.get_current_history_row("test-session") is None
+
+        # Facts should still exist
+        facts = db.get_facts("test-session")
+        assert len(facts) == 1
+        assert facts[0].content == "Some fact"
+
+    def test_facts_survive_clear_session(self, tmp_path: Path) -> None:
+        """Facts persist after clear_session_for_new is called multiple times."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+
+        # Add initial facts
+        db.add_fact("test-session", "Initial fact", "type1")
+
+        # Clear once
+        db.clear_session_for_new("test-session")
+
+        # Add more messages and facts
+        for i in range(2):
+            msg = ModelRequest(parts=[UserPromptPart(content=f"msg{i}")])
+            blob = ModelMessagesTypeAdapter.dump_json([msg])
+            db.add_message_blob("test-session", blob)
+
+        db.add_fact("test-session", "Second fact", "type2")
+
+        # Clear again
+        db.clear_session_for_new("test-session")
+
+        # Both facts should survive
+        facts = db.get_facts("test-session")
+        assert len(facts) == 2
+        contents = [f.content for f in facts]
+        assert "Initial fact" in contents
+        assert "Second fact" in contents

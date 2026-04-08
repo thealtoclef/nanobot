@@ -56,7 +56,7 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
     ctx_est = 0
     try:
         session = ctx.session or loop.sessions.get_session(ctx.key)
-        ctx_est = loop.memory_consolidator.estimate_session_prompt_tokens(session)
+        ctx_est = loop.history_summarizer.estimate_session_prompt_tokens(session)
     except Exception:
         pass
     return OutboundMessage(
@@ -80,9 +80,9 @@ async def cmd_new(ctx: CommandContext) -> OutboundMessage:
     loop = ctx.loop
     loop.sessions.ensure_session(ctx.key)
     snapshot = loop.sessions.get_unconsolidated_messages(ctx.key)
-    loop.sessions.delete_all_messages(ctx.key)
     if snapshot:
-        await loop.memory_consolidator.archive_messages(snapshot)
+        await loop.history_summarizer.summarize_and_extract(snapshot)
+    loop.sessions.clear_session_for_new(ctx.key)
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,

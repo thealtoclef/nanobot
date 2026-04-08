@@ -18,7 +18,7 @@ from loguru import logger
 
 from nanobot.agent.agent import NanobotAgent
 from nanobot.agent.context import ContextBuilder
-from nanobot.agent.memory import MemoryConsolidator
+from nanobot.agent.memory import HistorySummarizer
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -140,15 +140,12 @@ class AgentRunner:
             restrict_to_workspace=restrict_to_workspace,
         )
 
-        # Memory consolidator
-        from nanobot.agent.memory import MemoryConsolidator
-
-        self.memory_consolidator = MemoryConsolidator(
+        # History summarizer
+        self.history_summarizer = HistorySummarizer(
             db=self.db,
             agent=self.agent,
             sessions=self.sessions,
             context_window_tokens=context_window_tokens,
-            build_messages=self.context.build_messages,
             max_completion_tokens=4096,
         )
 
@@ -422,8 +419,8 @@ class AgentRunner:
             session = self.sessions.get_session(key)
             if self._restore_runtime_checkpoint(key):
                 pass  # checkpoint restored inline
-            # Memory consolidation
-            await self.memory_consolidator.maybe_consolidate_by_tokens(key)
+            # History summarization
+            await self.history_summarizer.maybe_summarize_by_tokens(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             unconsolidated = self.sessions.get_unconsolidated_messages(key)
             model_history, prompt_content = self.context.build_messages(
@@ -465,8 +462,8 @@ class AgentRunner:
         if result := await self.commands.dispatch(ctx):
             return result
 
-        # Memory consolidation
-        await self.memory_consolidator.maybe_consolidate_by_tokens(msg.session_key)
+        # History summarization
+        await self.history_summarizer.maybe_summarize_by_tokens(msg.session_key)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
         if message_tool := self.tools.get("message"):

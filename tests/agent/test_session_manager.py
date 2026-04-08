@@ -68,10 +68,10 @@ class TestSessionManagerEnsureSession:
         assert isinstance(session.created_at, pendulum.DateTime)
         assert isinstance(session.updated_at, pendulum.DateTime)
 
-    def test_session_initial_last_consolidated_is_none(self, mgr: SessionManager) -> None:
+    def test_session_initial_current_history_is_none(self, mgr: SessionManager) -> None:
         mgr.ensure_session("tg:new")
         session = mgr.get_session("tg:new")
-        assert session.last_consolidated_message_id is None
+        assert session.current_history_id is None
 
 
 class TestSessionManagerAddMessages:
@@ -136,8 +136,9 @@ class TestSessionManagerGetUnconsolidatedMessages:
         first_row_id = mgr.add_message("test:boundary", make_user_message("old"))
         second_row_id = mgr.add_message("test:boundary", make_assistant_message("mid"))
         mgr.add_message("test:boundary", make_user_message("new"))
-        # Set boundary after second message (so "new" is unconsolidated)
-        mgr.update_last_consolidated_message_id("test:boundary", second_row_id)
+        # Create history entry and set as current history (so "new" is unconsolidated)
+        history_id = mgr._db.add_history("test:boundary", "Summary", second_row_id)
+        mgr.update_current_history_id("test:boundary", history_id)
         uncons = mgr.get_unconsolidated_messages("test:boundary")
         assert len(uncons) == 1  # only "new" is unconsolidated
 
@@ -146,22 +147,24 @@ class TestSessionManagerGetUnconsolidatedMessages:
         first_row_id = mgr.add_message("test:multiboundary", make_user_message("msg1"))
         second_row_id = mgr.add_message("test:multiboundary", make_user_message("msg2"))
         mgr.add_message("test:multiboundary", make_user_message("msg3"))
-        # Set boundary after second message
-        mgr.update_last_consolidated_message_id("test:multiboundary", second_row_id)
+        # Create history entry and set as current history
+        history_id = mgr._db.add_history("test:multiboundary", "Summary", second_row_id)
+        mgr.update_current_history_id("test:multiboundary", history_id)
         uncons = mgr.get_unconsolidated_messages("test:multiboundary")
         assert len(uncons) == 1
 
 
-class TestSessionManagerUpdateLastConsolidated:
-    """Tests for update_last_consolidated_message_id."""
+class TestSessionManagerUpdateCurrentHistory:
+    """Tests for update_current_history_id."""
 
     def test_update_boundary(self, mgr: SessionManager) -> None:
         mgr.ensure_session("test:updateboundary")
         first_row_id = mgr.add_message("test:updateboundary", make_user_message("a"))
         mgr.add_message("test:updateboundary", make_assistant_message("b"))
-        mgr.update_last_consolidated_message_id("test:updateboundary", first_row_id)
+        history_id = mgr._db.add_history("test:updateboundary", "Summary", first_row_id)
+        mgr.update_current_history_id("test:updateboundary", history_id)
         session = mgr.get_session("test:updateboundary")
-        assert session.last_consolidated_message_id == first_row_id
+        assert session.current_history_id == history_id
 
 
 class TestSessionManagerDeleteAllMessages:
@@ -174,13 +177,14 @@ class TestSessionManagerDeleteAllMessages:
         mgr.delete_all_messages("test:deleteall")
         assert mgr.get_all_messages("test:deleteall") == []
 
-    def test_delete_resets_consolidation_boundary(self, mgr: SessionManager) -> None:
+    def test_delete_resets_history_pointer(self, mgr: SessionManager) -> None:
         mgr.ensure_session("test:deletereset")
         first_row_id = mgr.add_message("test:deletereset", make_user_message("msg1"))
-        mgr.update_last_consolidated_message_id("test:deletereset", first_row_id)
+        history_id = mgr._db.add_history("test:deletereset", "Summary", first_row_id)
+        mgr.update_current_history_id("test:deletereset", history_id)
         mgr.delete_all_messages("test:deletereset")
         session = mgr.get_session("test:deletereset")
-        assert session.last_consolidated_message_id is None
+        assert session.current_history_id is None
 
 
 class TestSessionManagerRoundTrip:
