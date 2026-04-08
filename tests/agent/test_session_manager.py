@@ -133,12 +133,9 @@ class TestSessionManagerGetUnconsolidatedMessages:
     def test_unconsolidated_filters_by_boundary(self, mgr: SessionManager) -> None:
         mgr.ensure_session("test:boundary")
         # Add messages as separate blobs so we can set boundary between them
-        mgr.add_message("test:boundary", make_user_message("old"))
-        mgr.add_message("test:boundary", make_assistant_message("mid"))
+        first_row_id = mgr.add_message("test:boundary", make_user_message("old"))
+        second_row_id = mgr.add_message("test:boundary", make_assistant_message("mid"))
         mgr.add_message("test:boundary", make_user_message("new"))
-        # Get the row id of the second message (index 1)
-        second_row_id = mgr.get_boundary_message_id("test:boundary", 1)
-        assert second_row_id is not None
         # Set boundary after second message (so "new" is unconsolidated)
         mgr.update_last_consolidated_message_id("test:boundary", second_row_id)
         uncons = mgr.get_unconsolidated_messages("test:boundary")
@@ -146,12 +143,10 @@ class TestSessionManagerGetUnconsolidatedMessages:
 
     def test_boundary_filters_multiple_blobs(self, mgr: SessionManager) -> None:
         mgr.ensure_session("test:multiboundary")
-        mgr.add_message("test:multiboundary", make_user_message("msg1"))
-        mgr.add_message("test:multiboundary", make_user_message("msg2"))
+        first_row_id = mgr.add_message("test:multiboundary", make_user_message("msg1"))
+        second_row_id = mgr.add_message("test:multiboundary", make_user_message("msg2"))
         mgr.add_message("test:multiboundary", make_user_message("msg3"))
         # Set boundary after second message
-        second_row_id = mgr.get_boundary_message_id("test:multiboundary", 1)
-        assert second_row_id is not None
         mgr.update_last_consolidated_message_id("test:multiboundary", second_row_id)
         uncons = mgr.get_unconsolidated_messages("test:multiboundary")
         assert len(uncons) == 1
@@ -162,10 +157,8 @@ class TestSessionManagerUpdateLastConsolidated:
 
     def test_update_boundary(self, mgr: SessionManager) -> None:
         mgr.ensure_session("test:updateboundary")
-        msgs = [make_user_message("a"), make_assistant_message("b")]
-        mgr.add_messages("test:updateboundary", msgs)
-        first_row_id = mgr.get_boundary_message_id("test:updateboundary", 0)
-        assert first_row_id is not None
+        first_row_id = mgr.add_message("test:updateboundary", make_user_message("a"))
+        mgr.add_message("test:updateboundary", make_assistant_message("b"))
         mgr.update_last_consolidated_message_id("test:updateboundary", first_row_id)
         session = mgr.get_session("test:updateboundary")
         assert session.last_consolidated_message_id == first_row_id
@@ -183,9 +176,7 @@ class TestSessionManagerDeleteAllMessages:
 
     def test_delete_resets_consolidation_boundary(self, mgr: SessionManager) -> None:
         mgr.ensure_session("test:deletereset")
-        mgr.add_message("test:deletereset", make_user_message("msg1"))
-        first_row_id = mgr.get_boundary_message_id("test:deletereset", 0)
-        assert first_row_id is not None
+        first_row_id = mgr.add_message("test:deletereset", make_user_message("msg1"))
         mgr.update_last_consolidated_message_id("test:deletereset", first_row_id)
         mgr.delete_all_messages("test:deletereset")
         session = mgr.get_session("test:deletereset")

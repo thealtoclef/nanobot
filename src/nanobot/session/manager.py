@@ -69,6 +69,22 @@ class SessionManager:
             result.extend(msgs)
         return result
 
+    def get_unconsolidated_blobs_with_ids(
+        self, session_key: str
+    ) -> list[tuple[int, list[ModelMessage]]]:
+        """Get unconsolidated blobs as (row_id, messages) pairs."""
+        row = self._db.get_session_row(session_key)
+        if row is None:
+            return []
+        rows = self._db.get_unconsolidated_message_blobs(
+            session_key, row.last_consolidated_message_id
+        )
+        result: list[tuple[int, list[ModelMessage]]] = []
+        for row in rows:
+            msgs = ModelMessagesTypeAdapter.validate_json(row.messages_json)
+            result.append((row.id, msgs))
+        return result
+
     def add_message(self, session_key: str, message: ModelMessage) -> int:
         """Append one message. Returns inserted row id."""
         blob = ModelMessagesTypeAdapter.dump_json([message])
@@ -84,21 +100,6 @@ class SessionManager:
     def update_last_consolidated_message_id(self, session_key: str, message_id: int) -> None:
         """Update consolidation boundary."""
         self._db.update_last_consolidated_message_id(session_key, message_id)
-
-    def get_boundary_message_id(self, session_key: str, boundary_idx: int) -> int | None:
-        """Get the MessageRow.id at the given message boundary index.
-
-        Maps a flat message index (into the linear list of all messages) to the
-        MessageRow.id that contains the message at that index.
-        """
-        rows = self._db.get_message_blobs(session_key)
-        count = 0
-        for row in rows:
-            msgs = ModelMessagesTypeAdapter.validate_json(row.messages_json)
-            if count + len(msgs) > boundary_idx:
-                return row.id
-            count += len(msgs)
-        return None
 
     def delete_all_messages(self, session_key: str) -> None:
         """Delete all messages. Resets consolidation boundary."""

@@ -20,8 +20,11 @@ if TYPE_CHECKING:
     from nanobot.session.manager import SessionManager
 
 
-def _model_message_to_dict(msg: ModelMessage) -> dict[str, Any]:
-    """Convert a PydanticAI ModelMessage to a nanobot session dict."""
+def _model_message_to_dicts(msg: ModelMessage) -> list[dict[str, Any]]:
+    """Convert a ModelMessage to a list of flat dicts for consolidation.
+
+    Each part becomes its own dict for simple text-based formatting.
+    """
     from pydantic_ai.messages import (
         ModelRequest,
         ModelResponse,
@@ -34,56 +37,70 @@ def _model_message_to_dict(msg: ModelMessage) -> dict[str, Any]:
         ThinkingPart,
     )
 
+    results: list[dict[str, Any]] = []
+
     if isinstance(msg, ModelRequest):
-        parts = []
         for part in msg.parts:
             if isinstance(part, SystemPromptPart):
-                parts.append({"role": "system", "content": part.content})
+                results.append({"role": "system", "content": part.content})
             elif isinstance(part, UserPromptPart):
-                parts.append({"role": "user", "content": part.content})
+                content = part.content
+                if isinstance(content, list):
+                    # Multi-modal: extract text parts, skip images
+                    text = " ".join(str(c) for c in content if isinstance(c, str))
+                    content = text or "[multimodal]"
+                results.append({"role": "user", "content": content})
             elif isinstance(part, ToolReturnPart):
-                parts.append(
+                results.append(
                     {
                         "role": "tool",
+                        "content": part.content,
                         "tool_call_id": part.tool_call_id,
                         "name": part.tool_name,
-                        "content": part.content,
                     }
                 )
             elif isinstance(part, RetryPromptPart):
-                parts.append(
+                results.append(
                     {
                         "role": "tool",
+                        "content": part.content,
                         "tool_call_id": part.tool_call_id,
                         "name": part.tool_name or "",
-                        "content": part.content,
                     }
                 )
-        return parts[0] if len(parts) == 1 else {"role": "request", "parts": parts}
     elif isinstance(msg, ModelResponse):
-        text_content = ""
-        tool_calls: list[dict[str, Any]] = []
-        thinking_content = ""
         for part in msg.parts:
             if isinstance(part, TextPart):
-                text_content = part.content
+                results.append({"role": "assistant", "content": part.content})
             elif isinstance(part, ToolCallPart):
-                tool_calls.append(
+                results.append(
                     {
-                        "tool_name": part.tool_name,
-                        "tool_call_id": part.tool_call_id,
-                        "args": part.args,
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "tool_name": part.tool_name,
+                                "tool_call_id": part.tool_call_id,
+                                "args": part.args,
+                            }
+                        ],
                     }
                 )
             elif isinstance(part, ThinkingPart):
-                thinking_content = part.content
-        return {
-            "role": "assistant",
-            "content": text_content,
-            "tool_calls": tool_calls or None,
-            "thinking": thinking_content or None,
-        }
-    return {"role": "unknown", "content": str(msg)}
+                pass  # Skip thinking parts for consolidation
+
+    if not results:
+        results.append({"role": "unknown", "content": str(msg)})
+
+    return results
+
+
+def _model_messages_to_flat_dicts(messages: list[ModelMessage]) -> list[dict[str, Any]]:
+    """Flatten a list of ModelMessages into simple role/content dicts."""
+    result = []
+    for msg in messages:
+        result.extend(_model_message_to_dicts(msg))
+    return result
 
 
 _INITIAL_MEMORY_TEMPLATE = """# Long-term Memory
@@ -313,33 +330,33 @@ class MemoryConsolidator:
 
     def pick_consolidation_boundary(
         self,
-        messages: list[ModelMessage],
+        blobs: list[tuple[int, list[ModelMessage]]],
         tokens_to_remove: int,
-    ) -> tuple[int, int] | None:
-        """Pick a user-turn boundary that removes enough old prompt tokens."""
-        if not messages or tokens_to_remove <= 0:
+    ) -> int | None:
+        """Pick a blob-level boundary that removes enough tokens.
+
+        Returns the row_id of the last blob to consolidate, or None.
+        Only consolidates complete blobs — never splits a blob.
+        """
+        if not blobs or tokens_to_remove <= 0:
             return None
 
         removed_tokens = 0
-        last_boundary: tuple[int, int] | None = None
-        for idx, message in enumerate(messages):
-            msg_dict = _model_message_to_dict(message)
-            if idx > 0 and msg_dict.get("role") == "user":
-                last_boundary = (idx, removed_tokens)
-                if removed_tokens >= tokens_to_remove:
-                    return last_boundary
-            removed_tokens += estimate_message_tokens(msg_dict)
+        for row_id, messages in blobs:
+            for msg in messages:
+                removed_tokens += estimate_message_tokens(_model_message_to_dicts(msg)[0])
+            if removed_tokens >= tokens_to_remove:
+                return row_id
 
-        return last_boundary
+        # Didn't reach target — consolidate everything
+        return None
 
-    def estimate_session_prompt_tokens(
-        self, session_key: str, all_messages: list[ModelMessage]
-    ) -> int:
-        """Estimate current prompt size for the normal session history view.
+    def estimate_session_prompt_tokens(self, session_key: str, messages: list[ModelMessage]) -> int:
+        """Estimate current prompt size for the given messages.
 
         Uses tiktoken directly (no provider needed).
         """
-        history = [_model_message_to_dict(m) for m in all_messages]
+        history = _model_messages_to_flat_dicts(messages)
         channel, chat_id = session_key.split(":", 1) if ":" in session_key else (None, None)
         probe_messages, _ = self._build_messages(
             history=history,
@@ -359,20 +376,20 @@ class MemoryConsolidator:
         return False
 
     async def maybe_consolidate_by_tokens(self, session_key: str) -> None:
-        """Loop: archive old messages until prompt fits within safe budget.
+        """Loop: archive old blobs until prompt fits within safe budget.
 
         The budget reserves space for completion tokens and a safety buffer
         so the LLM request never exceeds the context window.
         """
-        all_messages = self.sessions.get_all_messages(session_key)
-        if not all_messages or self.context_window_tokens <= 0:
+        unconsolidated = self.sessions.get_unconsolidated_messages(session_key)
+        if not unconsolidated or self.context_window_tokens <= 0:
             return
 
         lock = self.get_lock(session_key)
         async with lock:
             budget = self.context_window_tokens - self.max_completion_tokens - self._SAFETY_BUFFER
             target = budget // 2
-            estimated = self.estimate_session_prompt_tokens(session_key, all_messages)
+            estimated = self.estimate_session_prompt_tokens(session_key, unconsolidated)
             if estimated <= 0:
                 return
             if estimated < budget:
@@ -388,10 +405,11 @@ class MemoryConsolidator:
                 if estimated <= target:
                     return
 
-                boundary = self.pick_consolidation_boundary(
-                    all_messages, max(1, estimated - target)
+                blobs = self.sessions.get_unconsolidated_blobs_with_ids(session_key)
+                boundary_row_id = self.pick_consolidation_boundary(
+                    blobs, max(1, estimated - target)
                 )
-                if boundary is None:
+                if boundary_row_id is None:
                     logger.debug(
                         "Token consolidation: no safe boundary for {} (round {})",
                         session_key,
@@ -399,15 +417,17 @@ class MemoryConsolidator:
                     )
                     return
 
-                end_idx = boundary[0]
-                chunk = all_messages[:end_idx]
+                # Collect all messages from blobs up to boundary
+                chunk: list[ModelMessage] = []
+                for row_id, msgs in blobs:
+                    chunk.extend(msgs)
+                    if row_id == boundary_row_id:
+                        break
+
                 if not chunk:
                     return
 
-                # Convert ModelMessage chunk to session dicts for archiving
-                from nanobot.agent.agent import model_messages_to_session_messages
-
-                chunk_dicts = model_messages_to_session_messages(chunk)
+                chunk_dicts = _model_messages_to_flat_dicts(chunk)
 
                 logger.info(
                     "Token consolidation round {} for {}: {}/{}, chunk={} msgs",
@@ -420,13 +440,13 @@ class MemoryConsolidator:
                 if not await self.consolidate_messages(session_key, chunk_dicts):
                     return
 
-                # Update consolidation boundary using message row id
-                boundary_row_id = self.sessions.get_boundary_message_id(session_key, end_idx)
-                if boundary_row_id is not None:
-                    self.sessions.update_last_consolidated_message_id(session_key, boundary_row_id)
+                # Advance boundary to the consolidated blob row id
+                self.sessions.update_last_consolidated_message_id(session_key, boundary_row_id)
 
-                # Re-fetch messages after boundary update
-                all_messages = self.sessions.get_all_messages(session_key)
-                estimated = self.estimate_session_prompt_tokens(session_key, all_messages)
+                # Re-fetch unconsolidated and re-estimate
+                unconsolidated = self.sessions.get_unconsolidated_messages(session_key)
+                if not unconsolidated:
+                    return
+                estimated = self.estimate_session_prompt_tokens(session_key, unconsolidated)
                 if estimated <= 0:
                     return

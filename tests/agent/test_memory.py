@@ -267,8 +267,17 @@ class TestMemoryConsolidatorBoundary:
         mgr = MagicMock(spec=SessionManager)
         return mgr
 
-    def test_boundary_returns_tuple_with_index_and_tokens(self, db: Database) -> None:
-        """Boundary returns (index, removed_tokens) tuple."""
+    def _make_blobs(self, count: int) -> list[tuple[int, list]]:
+        """Create blobs (row_id, messages) pairs for testing."""
+        messages = _make_model_messages(count)
+        blobs = []
+        for i, msg in enumerate(messages):
+            # Each message is its own blob with row_id = i + 1
+            blobs.append((i + 1, [msg]))
+        return blobs
+
+    def test_boundary_returns_row_id(self, db: Database) -> None:
+        """Boundary returns row_id of the last blob to consolidate."""
         from nanobot.agent.memory import MemoryConsolidator
 
         consolidator = MemoryConsolidator(
@@ -279,18 +288,15 @@ class TestMemoryConsolidatorBoundary:
             build_messages=MagicMock(),
         )
 
-        messages = _make_model_messages(6)
-        # Pick boundary should work with ModelMessage list
-        boundary = consolidator.pick_consolidation_boundary(messages, tokens_to_remove=100)
+        blobs = self._make_blobs(6)
+        # Pick boundary should work with blob list
+        # Use low token threshold since test messages are short
+        boundary = consolidator.pick_consolidation_boundary(blobs, tokens_to_remove=1)
         assert boundary is not None
-        end_idx, removed_tokens = boundary
-        assert isinstance(end_idx, int)
-        assert isinstance(removed_tokens, int)
-        assert 0 < end_idx <= len(messages)
-        assert removed_tokens >= 0
+        assert isinstance(boundary, int)
 
     def test_no_boundary_when_already_at_start(self, db: Database) -> None:
-        """Returns None if start >= len(messages)."""
+        """Returns None if blobs is empty."""
         from nanobot.agent.memory import MemoryConsolidator
 
         consolidator = MemoryConsolidator(
@@ -301,7 +307,7 @@ class TestMemoryConsolidatorBoundary:
             build_messages=MagicMock(),
         )
 
-        # No messages to consolidate
+        # No blobs to consolidate
         boundary = consolidator.pick_consolidation_boundary([], tokens_to_remove=50)
         assert boundary is None
 
@@ -317,12 +323,12 @@ class TestMemoryConsolidatorBoundary:
             build_messages=MagicMock(),
         )
 
-        messages = _make_model_messages(3)
-        boundary = consolidator.pick_consolidation_boundary(messages, tokens_to_remove=0)
+        blobs = self._make_blobs(3)
+        boundary = consolidator.pick_consolidation_boundary(blobs, tokens_to_remove=0)
         assert boundary is None
 
-    def test_boundary_finds_user_turn_boundary(self, db: Database) -> None:
-        """Boundary should land on a user-turn boundary."""
+    def test_boundary_finds_blob_boundary(self, db: Database) -> None:
+        """Boundary should return a valid row_id."""
         from nanobot.agent.memory import MemoryConsolidator
 
         consolidator = MemoryConsolidator(
@@ -333,12 +339,13 @@ class TestMemoryConsolidatorBoundary:
             build_messages=MagicMock(),
         )
 
-        messages = _make_model_messages(6)
-        boundary = consolidator.pick_consolidation_boundary(messages, tokens_to_remove=100)
+        blobs = self._make_blobs(6)
+        # Use low token threshold since test messages are short
+        boundary = consolidator.pick_consolidation_boundary(blobs, tokens_to_remove=1)
         assert boundary is not None
-        end_idx, _ = boundary
-        # Should be at a user message boundary (even indices are user in our fixture)
-        assert end_idx % 2 == 0 or end_idx == 1
+        assert isinstance(boundary, int)
+        # Row ids are 1-indexed
+        assert 1 <= boundary <= 6
 
 
 class TestMemoryConsolidatorArchiveMessages:
