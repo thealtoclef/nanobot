@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-import tempfile
 from datetime import datetime as real_datetime
 from importlib.resources import files as pkg_files
 from pathlib import Path
 import datetime as datetime_module
-import shutil
+from unittest.mock import MagicMock
+
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    UserPromptPart,
+    TextPart,
+    SystemPromptPart,
+)
 
 from nanobot.agent.context import ContextBuilder
 from nanobot.db import Database
@@ -28,7 +36,6 @@ def _make_workspace(tmp_path: Path) -> Path:
 
 
 def _make_db(tmp_path: Path) -> Database:
-    db_path = tmp_path / "test.db"
     return Database(tmp_path)
 
 
@@ -85,8 +92,10 @@ def test_subagent_result_does_not_create_consecutive_assistant_messages(tmp_path
     db = _make_db(tmp_path)
     builder = ContextBuilder(workspace, db)
 
+    history: list[ModelMessage] = [ModelResponse(parts=[TextPart(content="previous result")])]
+
     messages, prompt_content = builder.build_messages(
-        history=[{"role": "assistant", "content": "previous result"}],
+        history=history,
         current_message="subagent result",
         channel="cli",
         chat_id="direct",
@@ -94,6 +103,52 @@ def test_subagent_result_does_not_create_consecutive_assistant_messages(tmp_path
 
     # History returned unchanged
     assert len(messages) == 1
-    assert messages[0]["role"] == "assistant"
+    assert isinstance(messages[0], ModelResponse)
     # Current message goes to prompt_content, not into history
     assert "subagent result" in prompt_content
+
+
+def test_build_messages_with_model_message_history(tmp_path) -> None:
+    """build_messages should work with list[ModelMessage] history."""
+    workspace = _make_workspace(tmp_path)
+    db = _make_db(tmp_path)
+    builder = ContextBuilder(workspace, db)
+
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="Hello")]),
+        ModelResponse(parts=[TextPart(content="Hi there!")]),
+    ]
+
+    messages, prompt_content = builder.build_messages(
+        history=history,
+        current_message="How are you?",
+        channel="cli",
+        chat_id="direct",
+    )
+
+    # History should be preserved
+    assert len(messages) == 2
+    assert isinstance(messages[0], ModelRequest)
+    assert isinstance(messages[1], ModelResponse)
+    # Current message in prompt_content
+    assert "How are you?" in prompt_content
+
+
+def test_build_messages_returns_model_messages_not_dicts(tmp_path) -> None:
+    """build_messages should return list[ModelMessage], not list[dict]."""
+    workspace = _make_workspace(tmp_path)
+    db = _make_db(tmp_path)
+    builder = ContextBuilder(workspace, db)
+
+    messages, _ = builder.build_messages(
+        history=[],
+        current_message="test",
+        channel="cli",
+        chat_id="direct",
+    )
+
+    # All items should be ModelMessage instances
+    for msg in messages:
+        assert isinstance(msg, (ModelRequest, ModelResponse)), (
+            f"Expected ModelMessage, got {type(msg)}"
+        )

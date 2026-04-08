@@ -129,12 +129,8 @@ class Nanobot:
                 Different keys get independent history.
             hooks: Optional lifecycle hooks for this run (not yet supported with pydanticAI-native agent).
         """
-        session = self._sessions.get_or_create(session_key)
-
-        from nanobot.agent.agent import session_messages_to_model_messages, persist_new_messages
-
-        history = session.get_history(max_messages=0)
-        model_messages = session_messages_to_model_messages(history)
+        self._sessions.ensure_session(session_key)
+        model_messages = self._sessions.get_unconsolidated_messages(session_key)
 
         try:
             content, new_messages = await self._agent.run(
@@ -142,10 +138,19 @@ class Nanobot:
                 message_history=model_messages,
             )
         except Exception:
-            self._sessions.save(session)
             raise
 
-        persist_new_messages(session, new_messages)
-        self._sessions.save(session)
+        from nanobot.agent.agent import model_messages_to_session_messages, sanitize_model_message
 
-        return RunResult(content=(content or ""), tools_used=[], messages=session.messages)
+        sanitized = [
+            m for m in (sanitize_model_message(msg) for msg in new_messages) if m is not None
+        ]
+        if sanitized:
+            self._sessions.add_messages(session_key, sanitized)
+        all_messages = self._sessions.get_all_messages(session_key)
+
+        return RunResult(
+            content=(content or ""),
+            tools_used=[],
+            messages=model_messages_to_session_messages(all_messages),
+        )

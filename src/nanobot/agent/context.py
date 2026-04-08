@@ -6,6 +6,12 @@ import platform
 from pathlib import Path
 from typing import Any
 
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    SystemPromptPart,
+)
+
 from nanobot.utils.helpers import current_time_str
 
 from nanobot.db import Database
@@ -91,14 +97,14 @@ Skills with available="false" need dependencies installed first - you can try in
 
     def build_messages(
         self,
-        history: list[dict[str, Any]],
+        history: list[ModelMessage],
         current_message: str,
         skill_names: list[str] | None = None,
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
         session_key: str | None = None,
-    ) -> tuple[list[dict[str, Any]], str | list[dict[str, Any]]]:
+    ) -> tuple[list[ModelMessage], str | list[dict[str, Any]]]:
         """Build history + prompt. History excludes the current message to avoid duplication with PydanticAI's user_prompt."""
         runtime_ctx = self._build_runtime_context(channel, chat_id, self.timezone)
         user_content = self._build_user_content(current_message, media)
@@ -113,7 +119,10 @@ Skills with available="false" need dependencies installed first - you can try in
             store = MemoryStore(self._db, session_key)
             memory_ctx = store.get_memory_context()
             if memory_ctx:
-                enriched_history = [{"role": "system", "content": memory_ctx}, *enriched_history]
+                enriched_history = [
+                    ModelRequest(parts=[SystemPromptPart(content=memory_ctx)]),
+                    *enriched_history,
+                ]
 
         return enriched_history, merged
 

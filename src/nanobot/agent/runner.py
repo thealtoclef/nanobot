@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.agent import NanobotAgent
+from nanobot.agent.agent import NanobotAgent, sanitize_model_message, trim_history
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryConsolidator
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
@@ -33,6 +33,7 @@ from nanobot.command.router import CommandRouter
 from nanobot.command.builtin import register_builtin_commands
 from nanobot.db import Database
 from nanobot.session.manager import SessionManager
+from pydantic_ai.messages import ModelMessage
 
 if TYPE_CHECKING:
     from nanobot.config.schema import (
@@ -159,6 +160,7 @@ class AgentRunner:
         self._active_tasks: dict[str, list[asyncio.Task]] = {}
         self._background_tasks: list[asyncio.Task] = []
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._checkpoints: dict[str, dict[str, Any]] = {}
         _max = int(os.environ.get("NANOBOT_MAX_CONCURRENT_REQUESTS", "3"))
         self._concurrency_gate: asyncio.Semaphore | None = (
             asyncio.Semaphore(_max) if _max > 0 else None
@@ -416,31 +418,37 @@ class AgentRunner:
             )
             logger.info("Processing system message from {}", msg.sender_id)
             key = f"{channel}:{chat_id}"
-            session = self.sessions.get_or_create(key)
-            if self._restore_runtime_checkpoint(session):
-                self.sessions.save(session)
+            self.sessions.ensure_session(key)
+            session = self.sessions.get_session(key)
+            if self._restore_runtime_checkpoint(key):
+                pass  # checkpoint restored inline
             # Memory consolidation
-            await self.memory_consolidator.maybe_consolidate_by_tokens(session)
+            await self.memory_consolidator.maybe_consolidate_by_tokens(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
-            history = session.get_history(max_messages=0)
-            messages, prompt_content = self.context.build_messages(
-                history=history,
+            unconsolidated = self.sessions.get_unconsolidated_messages(key)
+            trimmed = trim_history(unconsolidated, max_messages=500)
+            model_history, prompt_content = self.context.build_messages(
+                history=trimmed,
                 current_message=msg.content,
                 channel=channel,
                 chat_id=chat_id,
-                session_key=session.key,
+                session_key=key,
             )
             final_content, new_messages = await self._run_agent_loop(
-                messages,
+                model_history,
                 user_content=prompt_content,
                 session=session,
                 channel=channel,
                 chat_id=chat_id,
                 message_id=msg.metadata.get("message_id"),
             )
-            self._save_turn(session, new_messages)
-            self._clear_runtime_checkpoint(session)
-            self.sessions.save(session)
+            # Sanitize and append
+            sanitized = [
+                m for m in (sanitize_model_message(msg) for msg in new_messages) if m is not None
+            ]
+            if sanitized:
+                self.sessions.add_messages(key, sanitized)
+            self._clear_runtime_checkpoint(key)
             return OutboundMessage(
                 channel=channel,
                 chat_id=chat_id,
@@ -450,9 +458,10 @@ class AgentRunner:
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
-        session = self.sessions.get_or_create(msg.session_key)
-        if self._restore_runtime_checkpoint(session):
-            self.sessions.save(session)
+        self.sessions.ensure_session(msg.session_key)
+        session = self.sessions.get_session(msg.session_key)
+        if self._restore_runtime_checkpoint(session.key):
+            pass  # checkpoint restored inline
 
         # Slash commands
         raw = msg.content.strip()
@@ -461,16 +470,17 @@ class AgentRunner:
             return result
 
         # Memory consolidation
-        await self.memory_consolidator.maybe_consolidate_by_tokens(session)
+        await self.memory_consolidator.maybe_consolidate_by_tokens(msg.session_key)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
-        history = session.get_history(max_messages=0)
-        initial_messages, prompt_content = self.context.build_messages(
-            history=history,
+        unconsolidated = self.sessions.get_unconsolidated_messages(msg.session_key)
+        trimmed = trim_history(unconsolidated, max_messages=500)
+        model_history, prompt_content = self.context.build_messages(
+            history=trimmed,
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel,
@@ -492,7 +502,7 @@ class AgentRunner:
             )
 
         final_content, new_messages = await self._run_agent_loop(
-            initial_messages,
+            model_history,
             user_content=prompt_content,
             session=session,
             channel=msg.channel,
@@ -506,9 +516,13 @@ class AgentRunner:
         if not final_content or not final_content.strip():
             final_content = EMPTY_FINAL_RESPONSE_MESSAGE
 
-        self._save_turn(session, new_messages)
-        self._clear_runtime_checkpoint(session)
-        self.sessions.save(session)
+        # Sanitize and append
+        sanitized = [
+            m for m in (sanitize_model_message(msg) for msg in new_messages) if m is not None
+        ]
+        if sanitized:
+            self.sessions.add_messages(session.key, sanitized)
+        self._clear_runtime_checkpoint(session.key)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None
@@ -528,7 +542,7 @@ class AgentRunner:
 
     async def _run_agent_loop(
         self,
-        initial_messages: list[dict[str, Any]],
+        initial_messages: list[ModelMessage],
         user_content: str | list[dict[str, Any]] = "",
         session: Any | None = None,
         channel: str = "cli",
@@ -543,11 +557,11 @@ class AgentRunner:
         Returns:
             Tuple of (final_text, new_model_messages).
         """
-        from nanobot.agent.agent import session_messages_to_model_messages, _to_user_content
+        from nanobot.agent.agent import _to_user_content
 
         await self._connect_mcp()
 
-        model_messages = session_messages_to_model_messages(initial_messages)
+        model_messages = list(initial_messages)
         prompt = _to_user_content(user_content) if isinstance(user_content, list) else user_content
 
         if on_stream is not None:
@@ -666,11 +680,6 @@ class AgentRunner:
     # Session helpers
     # -------------------------------------------------------------------------
 
-    def _save_turn(self, session: Any, new_model_messages: list) -> None:
-        from nanobot.agent.agent import persist_new_messages
-
-        persist_new_messages(session, new_model_messages, self.max_tool_result_chars)
-
     def _sanitize_persisted_blocks(
         self,
         content: list[dict[str, Any]],
@@ -687,13 +696,11 @@ class AgentRunner:
             drop_runtime=drop_runtime,
         )
 
-    def _set_runtime_checkpoint(self, session: Any, payload: dict[str, Any]) -> None:
-        session.metadata[_RUNTIME_CHECKPOINT_KEY] = payload
-        self.sessions.save(session)
+    def _set_runtime_checkpoint(self, session_key: str, payload: dict[str, Any]) -> None:
+        self._checkpoints[session_key] = payload
 
-    def _clear_runtime_checkpoint(self, session: Any) -> None:
-        if _RUNTIME_CHECKPOINT_KEY in session.metadata:
-            session.metadata.pop(_RUNTIME_CHECKPOINT_KEY, None)
+    def _clear_runtime_checkpoint(self, session_key: str) -> None:
+        self._checkpoints.pop(session_key, None)
 
     @staticmethod
     def _checkpoint_message_key(message: dict[str, Any]) -> tuple[Any, ...]:
@@ -707,11 +714,11 @@ class AgentRunner:
             message.get("thinking_blocks"),
         )
 
-    def _restore_runtime_checkpoint(self, session: Any) -> bool:
+    def _restore_runtime_checkpoint(self, session_key: str) -> bool:
         """Materialize an unfinished turn into session history."""
         from datetime import datetime
 
-        checkpoint = session.metadata.get(_RUNTIME_CHECKPOINT_KEY)
+        checkpoint = self._checkpoints.get(session_key)
         if not isinstance(checkpoint, dict):
             return False
 
@@ -744,10 +751,16 @@ class AgentRunner:
                 }
             )
 
+        # Get current unconsolidated messages to check for overlap
+        unconsolidated = self.sessions.get_unconsolidated_messages(session_key)
+        from nanobot.agent.agent import model_messages_to_session_messages
+
+        existing_dicts = model_messages_to_session_messages(unconsolidated)
+
         overlap = 0
-        max_overlap = min(len(session.messages), len(restored_messages))
+        max_overlap = min(len(existing_dicts), len(restored_messages))
         for size in range(max_overlap, 0, -1):
-            existing = session.messages[-size:]
+            existing = existing_dicts[-size:]
             restored = restored_messages[:size]
             if all(
                 self._checkpoint_message_key(left) == self._checkpoint_message_key(right)
@@ -755,8 +768,14 @@ class AgentRunner:
             ):
                 overlap = size
                 break
-        session.messages.extend(restored_messages[overlap:])
-        self._clear_runtime_checkpoint(session)
+
+        if restored_messages[overlap:]:
+            from nanobot.agent.agent import session_messages_to_model_messages
+
+            model_messages = session_messages_to_model_messages(restored_messages[overlap:])
+            self.sessions.add_messages(session_key, model_messages)
+
+        self._clear_runtime_checkpoint(session_key)
         return True
 
 

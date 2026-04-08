@@ -23,18 +23,52 @@ from nanobot.agent.memory import (
     _INITIAL_MEMORY_TEMPLATE,
 )
 from nanobot.db import Database, upgrade_db
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    UserPromptPart,
+    TextPart,
+)
 
 
-def _make_messages(count: int = 5) -> list[dict]:
-    return [
-        {
-            "role": "user" if i % 2 == 0 else "assistant",
-            "content": f"message {i}",
-            "timestamp": f"2026-04-08T10:{i:02d}:00",
-            "tools_used": [],
-        }
-        for i in range(count)
-    ]
+def _make_model_messages(count: int = 5) -> list:
+    """Create ModelMessage list for testing."""
+    messages = []
+    for i in range(count):
+        if i % 2 == 0:
+            messages.append(ModelRequest(parts=[UserPromptPart(content=f"message {i}")]))
+        else:
+            messages.append(ModelResponse(parts=[TextPart(content=f"message {i}")]))
+    return messages
+
+
+def _model_messages_to_dicts(messages: list) -> list[dict]:
+    """Convert ModelMessage list to dicts for MemoryStore.consolidate."""
+    result = []
+    for msg in messages:
+        if isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, UserPromptPart):
+                    result.append(
+                        {
+                            "role": "user",
+                            "content": part.content,
+                            "timestamp": f"2026-04-08T10:{len(result):02d}:00",
+                            "tools_used": [],
+                        }
+                    )
+        elif isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, TextPart):
+                    result.append(
+                        {
+                            "role": "assistant",
+                            "content": part.content,
+                            "timestamp": f"2026-04-08T10:{len(result):02d}:00",
+                            "tools_used": [],
+                        }
+                    )
+    return result
 
 
 def _consolidation_test_model(
@@ -54,9 +88,12 @@ _EMPTY_DEPS = ConsolidationDeps(current_memory="", session_messages=[])
 
 @pytest.fixture
 def db(tmp_path: Path) -> Database:
+    from nanobot.db import Base
+
     upgrade_db(tmp_path)
     db = Database(tmp_path)
-    db.get_or_create_session("session:test")
+    Base.metadata.create_all(db.engine)
+    db.ensure_session("session:test")
     return db
 
 
@@ -122,7 +159,7 @@ class TestConsolidationDepsInjection:
 
     @pytest.mark.asyncio
     async def test_session_messages_passed(self) -> None:
-        messages = _make_messages(3)
+        messages = _model_messages_to_dicts(_make_model_messages(3))
         tm = _consolidation_test_model()
         deps = ConsolidationDeps(current_memory="", session_messages=messages)
         with _consolidation_agent.override(model=tm):
@@ -134,7 +171,7 @@ class TestConsolidationDepsInjection:
         tm = _consolidation_test_model()
         deps = ConsolidationDeps(
             current_memory="# Memory\nUser prefers dark mode.",
-            session_messages=_make_messages(5),
+            session_messages=_model_messages_to_dicts(_make_model_messages(5)),
         )
         with _consolidation_agent.override(model=tm):
             result = await _consolidation_agent.run(user_prompt="test", model=tm, deps=deps)
@@ -162,7 +199,9 @@ class TestConsolidationFlowWithTestModel:
 
         with _consolidation_agent.override(model=tm):
             mock_agent.pydantic_agent.model = tm
-            result = await store.consolidate(_make_messages(3), mock_agent)
+            result = await store.consolidate(
+                _model_messages_to_dicts(_make_model_messages(3)), mock_agent
+            )
 
         assert result is True
         history = db.get_recent_history("session:test", limit=5)
@@ -179,9 +218,10 @@ class TestConsolidationFlowWithTestModel:
 
         with _consolidation_agent.override(model=tm):
             mock_agent.pydantic_agent.model = tm
-            await store.consolidate(_make_messages(2), mock_agent)
+            await store.consolidate(_model_messages_to_dicts(_make_model_messages(2)), mock_agent)
 
         curated = db.get_curated_memory("session:test")
+        assert curated is not None
         assert "Updated fact" in curated
 
     @pytest.mark.asyncio
@@ -198,10 +238,12 @@ class TestConsolidationFlowWithTestModel:
 
         with _consolidation_agent.override(model=tm):
             mock_agent.pydantic_agent.model = tm
-            result = await store.consolidate(_make_messages(2), mock_agent)
+            result = await store.consolidate(
+                _model_messages_to_dicts(_make_model_messages(2)), mock_agent
+            )
 
         assert result is True
-        assert db.get_curated_memory("session:test")
+        assert db.get_curated_memory("session:test") is not None
 
     @pytest.mark.asyncio
     async def test_preserves_memory_when_update_equals_current(
@@ -218,7 +260,9 @@ class TestConsolidationFlowWithTestModel:
 
         with _consolidation_agent.override(model=tm):
             mock_agent.pydantic_agent.model = tm
-            result = await store.consolidate(_make_messages(2), mock_agent)
+            result = await store.consolidate(
+                _model_messages_to_dicts(_make_model_messages(2)), mock_agent
+            )
 
         assert result is True
         assert store.read_long_term() == original
@@ -237,7 +281,9 @@ class TestConsolidationFlowWithTestModel:
 
         with _consolidation_agent.override(model=tm):
             mock_agent.pydantic_agent.model = tm
-            result = await store.consolidate(_make_messages(2), mock_agent)
+            result = await store.consolidate(
+                _model_messages_to_dicts(_make_model_messages(2)), mock_agent
+            )
 
         assert result is True
         assert "Existing content" in store.read_long_term()
@@ -250,7 +296,9 @@ class TestConsolidationFlowWithTestModel:
         tm = _consolidation_test_model()
         with _consolidation_agent.override(model=tm):
             mock_agent.pydantic_agent.model = tm
-            result = await store.consolidate(_make_messages(2), mock_agent)
+            result = await store.consolidate(
+                _model_messages_to_dicts(_make_model_messages(2)), mock_agent
+            )
 
         assert result is True
         assert store._consecutive_failures == 0
@@ -271,11 +319,11 @@ class TestConsolidationFlowWithTestModel:
 
         with _consolidation_agent.override(model=tm1):
             mock_agent.pydantic_agent.model = tm1
-            await store.consolidate(_make_messages(3), mock_agent)
+            await store.consolidate(_model_messages_to_dicts(_make_model_messages(3)), mock_agent)
 
         with _consolidation_agent.override(model=tm2):
             mock_agent.pydantic_agent.model = tm2
-            await store.consolidate(_make_messages(3), mock_agent)
+            await store.consolidate(_model_messages_to_dicts(_make_model_messages(3)), mock_agent)
 
         history = db.get_recent_history("session:test", limit=10)
         assert len(history) == 2

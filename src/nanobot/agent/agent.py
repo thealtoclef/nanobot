@@ -14,6 +14,8 @@ from pydantic_ai import Agent
 from pydantic_ai.agent import Agent as PydanticAIAgent
 from pydantic_ai.agent import RunContext
 from pydantic_ai.capabilities.hooks import Hooks
+from datetime import datetime
+
 from pydantic_ai.messages import (
     AgentStreamEvent,
     FunctionToolCallEvent,
@@ -22,6 +24,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     SystemPromptPart,
     TextPart,
     ToolCallPart,
@@ -198,6 +201,129 @@ def model_messages_to_session_messages(
             result.append(entry)
 
     return result
+
+
+def trim_history(messages: list[ModelMessage], max_messages: int = 500) -> list[ModelMessage]:
+    """Trim message history to fit within max_messages, respecting legal boundaries.
+
+    Finds a user-turn boundary, drops orphan tool results at the front.
+    """
+    if not messages:
+        return []
+
+    # Apply max_messages limit
+    if max_messages > 0:
+        sliced = messages[-max_messages:]
+    else:
+        sliced = list(messages)
+
+    # Find first user-turn start (skip orphan tool results at front)
+    start = find_legal_model_message_start(sliced)
+    if start:
+        sliced = sliced[start:]
+
+    return sliced
+
+
+def find_legal_model_message_start(messages: list[ModelMessage]) -> int:
+    """Find the first index that represents a legal message start.
+
+    A legal start means any tool results at the front have matching
+    preceding tool calls within the same session.
+    """
+    if not messages:
+        return 0
+
+    declared: set[str] = set()
+    start = 0
+
+    for i, msg in enumerate(messages):
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart) and part.tool_call_id:
+                    declared.add(str(part.tool_call_id))
+        elif isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, (ToolReturnPart, RetryPromptPart)):
+                    tid = getattr(part, "tool_call_id", None)
+                    if tid and str(tid) not in declared:
+                        # Orphan tool result — start from next message
+                        start = i + 1
+                        declared.clear()
+                        # Re-scan declared from new start
+                        for j in range(start, len(messages)):
+                            m = messages[j]
+                            if isinstance(m, ModelResponse):
+                                for p in m.parts:
+                                    if isinstance(p, ToolCallPart) and p.tool_call_id:
+                                        declared.add(str(p.tool_call_id))
+                        break
+
+    return start
+
+
+def sanitize_model_message(msg: ModelMessage, max_chars: int = 16000) -> ModelMessage | None:
+    """Sanitize a ModelMessage for persistence.
+
+    Uses dict conversion bridge: ModelMessage → dict → sanitize → ModelMessage
+    """
+    from nanobot.agent.context import ContextBuilder
+
+    # Convert to dict for sanitization using existing logic
+    dicts = model_messages_to_session_messages([msg])
+    if not dicts:
+        return None
+
+    d = dicts[0]
+    role = d.get("role")
+    content = d.get("content")
+
+    # Drop empty assistant messages (no text, no tool calls)
+    if role == "assistant" and not content and not d.get("tool_calls"):
+        return None
+
+    # Strip runtime context from user messages
+    if role == "user":
+        if isinstance(content, str) and content.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
+            parts = content.split("\n\n", 1)
+            if len(parts) > 1 and parts[1].strip():
+                d = {"role": "user", "content": parts[1]}
+            else:
+                return None  # pure runtime context, drop
+        elif isinstance(content, list):
+            filtered = _sanitize_persisted_blocks(content, max_chars, drop_runtime=True)
+            if not filtered:
+                return None
+            d = {"role": "user", "content": filtered}
+
+    # Truncate tool results
+    if role == "tool":
+        if isinstance(content, str) and len(content) > max_chars:
+            from nanobot.utils.helpers import truncate_text
+
+            d = {
+                "role": "tool",
+                "content": truncate_text(content, max_chars),
+                "tool_call_id": d.get("tool_call_id"),
+                "name": d.get("name"),
+            }
+        elif isinstance(content, list):
+            filtered = _sanitize_persisted_blocks(content, max_chars, truncate_text=True)
+            if not filtered:
+                return None
+            d = {
+                "role": "tool",
+                "content": filtered,
+                "tool_call_id": d.get("tool_call_id"),
+                "name": d.get("name"),
+            }
+
+    # Add timestamp
+    d.setdefault("timestamp", datetime.now().isoformat())
+
+    # Convert back to ModelMessage
+    restored = session_messages_to_model_messages([d])
+    return restored[0] if restored else None
 
 
 def persist_new_messages(

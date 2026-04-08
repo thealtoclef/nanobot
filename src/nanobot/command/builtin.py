@@ -28,8 +28,7 @@ async def cmd_stop(ctx: CommandContext) -> OutboundMessage:
     total = cancelled + sub_cancelled
     content = f"Stopped {total} task(s)." if total else "No active task to stop."
     return OutboundMessage(
-        channel=msg.channel, chat_id=msg.chat_id, content=content,
-        metadata=dict(msg.metadata or {})
+        channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=dict(msg.metadata or {})
     )
 
 
@@ -44,17 +43,19 @@ async def cmd_restart(ctx: CommandContext) -> OutboundMessage:
 
     asyncio.create_task(_do_restart())
     return OutboundMessage(
-        channel=msg.channel, chat_id=msg.chat_id, content="Restarting...",
-        metadata=dict(msg.metadata or {})
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content="Restarting...",
+        metadata=dict(msg.metadata or {}),
     )
 
 
 async def cmd_status(ctx: CommandContext) -> OutboundMessage:
     """Build an outbound status message for a session."""
     loop = ctx.loop
-    session = ctx.session or loop.sessions.get_or_create(ctx.key)
     ctx_est = 0
     try:
+        session = ctx.session or loop.sessions.get_session(ctx.key)
         ctx_est = loop.memory_consolidator.estimate_session_prompt_tokens(session)
     except Exception:
         pass
@@ -62,10 +63,12 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content=build_status_content(
-            version=__version__, model=loop.model,
-            start_time=loop._start_time, last_usage=loop._last_usage,
+            version=__version__,
+            model=loop.model,
+            start_time=loop._start_time,
+            last_usage=loop._last_usage,
             context_window_tokens=loop.context_window_tokens,
-            session_msg_count=len(session.get_history(max_messages=0)),
+            session_msg_count=len(loop.sessions.get_all_messages(ctx.key)),
             context_tokens_estimate=ctx_est,
         ),
         metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
@@ -75,17 +78,16 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
 async def cmd_new(ctx: CommandContext) -> OutboundMessage:
     """Start a fresh session."""
     loop = ctx.loop
-    session = ctx.session or loop.sessions.get_or_create(ctx.key)
-    snapshot = session.messages[session.last_consolidated:]
-    session.clear()
-    loop.sessions.save(session)
-    loop.sessions.invalidate(session.key)
+    loop.sessions.ensure_session(ctx.key)
+    snapshot = loop.sessions.get_unconsolidated_messages(ctx.key)
+    loop.sessions.delete_all_messages(ctx.key)
     if snapshot:
-        loop._schedule_background(loop.memory_consolidator.archive_messages(snapshot))
+        await loop.memory_consolidator.archive_messages(snapshot)
     return OutboundMessage(
-        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
         content="New session started.",
-        metadata=dict(ctx.msg.metadata or {})
+        metadata=dict(ctx.msg.metadata or {}),
     )
 
 

@@ -8,6 +8,7 @@ import pytest
 import sqlalchemy as sa
 
 from nanobot.db import Database, upgrade_db
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, UserPromptPart
 
 
 class TestDatabase:
@@ -18,123 +19,154 @@ class TestDatabase:
         assert db.engine is not None
         assert (tmp_path / "sessions.db").exists()
 
-    def test_get_or_create_session(self, tmp_path: Path) -> None:
-        """Can create and retrieve a session."""
+    def test_ensure_session(self, tmp_path: Path) -> None:
+        """Can create a session with ensure_session."""
         upgrade_db(tmp_path)
         db = Database(tmp_path)
-        session = db.get_or_create_session("test-session")
-        assert session.key == "test-session"
-        assert session.message_count == 0
+        db.ensure_session("test-session")
+        row = db.get_session_row("test-session")
+        assert row is not None
+        assert row.key == "test-session"
+        assert row.last_consolidated_message_id is None
 
-    def test_append_and_retrieve_message(self, tmp_path: Path) -> None:
-        """Can append a message and retrieve it."""
+    def test_ensure_session_idempotent(self, tmp_path: Path) -> None:
+        """ensure_session is idempotent - calling twice doesn't error."""
         upgrade_db(tmp_path)
         db = Database(tmp_path)
-        db.append_message("test-session", role="user", content="hello")
-        messages = db.get_messages("test-session")
-        assert len(messages) == 1
-        assert messages[0].content == "hello"
-        assert messages[0].role == "user"
+        db.ensure_session("test-session")
+        db.ensure_session("test-session")  # Should not raise
+        row = db.get_session_row("test-session")
+        assert row is not None
 
-    def test_message_positions_increment_correctly(self, tmp_path: Path) -> None:
-        """Messages get sequential positions within a session."""
+    def test_add_message_blob(self, tmp_path: Path) -> None:
+        """Can add a message blob and retrieve it."""
         upgrade_db(tmp_path)
         db = Database(tmp_path)
+        db.ensure_session("test-session")
+        msg = ModelRequest(parts=[UserPromptPart(content="hello")])
+        blob = ModelMessagesTypeAdapter.dump_json([msg])
+        id = db.add_message_blob("test-session", blob)
+        assert id == 1
 
-        db.append_message("s1", role="user", content="msg1")
-        db.append_message("s1", role="assistant", content="msg2")
-        db.append_message("s1", role="user", content="msg3")
+        rows = db.get_message_blobs("test-session")
+        assert len(rows) == 1
+        assert rows[0].id == 1
 
-        messages = db.get_all_messages("s1")
-        assert len(messages) == 3
-        assert messages[0].position == 1
-        assert messages[0].content == "msg1"
-        assert messages[1].position == 2
-        assert messages[1].content == "msg2"
-        assert messages[2].position == 3
-        assert messages[2].content == "msg3"
-
-    def test_message_count_tracked_in_session_table(self, tmp_path: Path) -> None:
-        """The sessions table message_count matches actual message count."""
+    def test_message_blobs_ordered_by_id(self, tmp_path: Path) -> None:
+        """Message blobs are returned in id order."""
         upgrade_db(tmp_path)
         db = Database(tmp_path)
+        db.ensure_session("test-session")
 
-        db.append_message("s1", role="user", content="msg1")
-        db.append_message("s1", role="assistant", content="msg2")
-        db.append_message("s1", role="user", content="msg3")
+        for i in range(3):
+            msg = ModelRequest(parts=[UserPromptPart(content=f"msg{i}")])
+            blob = ModelMessagesTypeAdapter.dump_json([msg])
+            db.add_message_blob("test-session", blob)
 
-        with db.engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT message_count FROM sessions WHERE key = 's1'")
-            ).fetchone()
-            assert row[0] == 3
+        rows = db.get_message_blobs("test-session")
+        assert len(rows) == 3
+        assert rows[0].id == 1
+        assert rows[1].id == 2
+        assert rows[2].id == 3
 
-    def test_save_all_messages_replaces_existing(self, tmp_path: Path) -> None:
-        """save_all_messages replaces all messages for a session."""
+    def test_unconsolidated_message_blobs_filtering(self, tmp_path: Path) -> None:
+        """get_unconsolidated_message_blobs returns only messages after last_consolidated_id."""
         upgrade_db(tmp_path)
         db = Database(tmp_path)
+        db.ensure_session("test-session")
 
-        db.append_message("s1", role="user", content="old")
-        db.save_all_messages(
-            "s1",
-            [
-                {"role": "user", "content": "new1"},
-                {"role": "assistant", "content": "new2"},
-            ],
-        )
+        # Add 3 message blobs
+        for i in range(3):
+            msg = ModelRequest(parts=[UserPromptPart(content=f"msg{i}")])
+            blob = ModelMessagesTypeAdapter.dump_json([msg])
+            db.add_message_blob("test-session", blob)
 
-        messages = db.get_all_messages("s1")
-        assert len(messages) == 2
-        assert messages[0].content == "new1"
-        assert messages[1].content == "new2"
+        # Consolidate first two messages
+        db.update_last_consolidated_message_id("test-session", 2)
 
-        with db.engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT message_count FROM sessions WHERE key = 's1'")
-            ).fetchone()
-            assert row[0] == 2
+        # Should only get message 3
+        unconsolidated = db.get_unconsolidated_message_blobs("test-session", 2)
+        assert len(unconsolidated) == 1
+        assert unconsolidated[0].id == 3
 
-    def test_last_consolidated_position_updated(self, tmp_path: Path) -> None:
-        """last_consolidated_position is persisted correctly."""
+        # Consolidate all
+        db.update_last_consolidated_message_id("test-session", 3)
+        unconsolidated = db.get_unconsolidated_message_blobs("test-session", 3)
+        assert len(unconsolidated) == 0
+
+    def test_delete_all_messages(self, tmp_path: Path) -> None:
+        """delete_all_messages removes all message blobs and resets consolidation."""
         upgrade_db(tmp_path)
         db = Database(tmp_path)
+        db.ensure_session("test-session")
 
-        db.append_message("s1", role="user", content="msg1")
-        db.update_last_consolidated_position("s1", 5)
+        for i in range(3):
+            msg = ModelRequest(parts=[UserPromptPart(content=f"msg{i}")])
+            blob = ModelMessagesTypeAdapter.dump_json([msg])
+            db.add_message_blob("test-session", blob)
 
-        pos = db.get_last_consolidated_position("s1")
-        assert pos == 5
+        db.update_last_consolidated_message_id("test-session", 2)
+        db.delete_all_messages("test-session")
+
+        rows = db.get_message_blobs("test-session")
+        assert len(rows) == 0
+
+        row = db.get_session_row("test-session")
+        assert row is not None
+        assert row.last_consolidated_message_id is None
+
+    def test_touch_session_updates_timestamp(self, tmp_path: Path) -> None:
+        """touch_session updates the updated_at timestamp."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("test-session")
+        row_before = db.get_session_row("test-session")
+        assert row_before is not None
+        original_updated_at = row_before.updated_at
+
+        import time
+
+        time.sleep(0.01)  # Small delay to ensure timestamp difference
+
+        db.touch_session("test-session")
+        row_after = db.get_session_row("test-session")
+        assert row_after is not None
+        assert row_after.updated_at >= original_updated_at
 
     def test_messages_isolated_per_session(self, tmp_path: Path) -> None:
         """Different sessions have separate message histories."""
         upgrade_db(tmp_path)
         db = Database(tmp_path)
 
-        db.append_message("s1", role="user", content="msg1")
-        db.append_message("s2", role="user", content="msg2")
+        db.ensure_session("s1")
+        db.ensure_session("s2")
 
-        msgs1 = db.get_all_messages("s1")
-        msgs2 = db.get_all_messages("s2")
+        msg1 = ModelRequest(parts=[UserPromptPart(content="hello s1")])
+        blob1 = ModelMessagesTypeAdapter.dump_json([msg1])
+        db.add_message_blob("s1", blob1)
 
-        assert len(msgs1) == 1
-        assert msgs1[0].content == "msg1"
-        assert len(msgs2) == 1
-        assert msgs2[0].content == "msg2"
+        msg2 = ModelRequest(parts=[UserPromptPart(content="hello s2")])
+        blob2 = ModelMessagesTypeAdapter.dump_json([msg2])
+        db.add_message_blob("s2", blob2)
+
+        rows_s1 = db.get_message_blobs("s1")
+        rows_s2 = db.get_message_blobs("s2")
+
+        assert len(rows_s1) == 1
+        assert len(rows_s2) == 1
 
 
 class TestConcurrentAccess:
-    def test_concurrent_get_or_create_no_duplicates(self, tmp_path: Path) -> None:
-        """Concurrent get_or_create_session calls produce exactly one session row."""
+    def test_concurrent_ensure_session_no_duplicates(self, tmp_path: Path) -> None:
+        """Concurrent ensure_session calls produce exactly one session row."""
         upgrade_db(tmp_path)
         db = Database(tmp_path)
         n_threads = 10
-        results: list[str] = []
         errors: list[Exception] = []
 
         def worker():
             try:
-                session = db.get_or_create_session("race-session")
-                results.append(session.key)
+                db.ensure_session("race-session")
             except Exception as exc:
                 errors.append(exc)
 
@@ -145,7 +177,6 @@ class TestConcurrentAccess:
             t.join(timeout=10)
 
         assert not errors, f"Unexpected errors: {errors}"
-        assert len(results) == n_threads
 
         with db.engine.connect() as conn:
             count = conn.execute(
@@ -153,18 +184,23 @@ class TestConcurrentAccess:
             ).scalar()
             assert count == 1
 
-    def test_concurrent_append_no_position_duplicates(self, tmp_path: Path) -> None:
-        """Concurrent append_message calls produce unique sequential positions."""
+    def test_concurrent_add_message_blob_unique_ids(self, tmp_path: Path) -> None:
+        """Concurrent add_message_blob calls produce unique sequential ids."""
         upgrade_db(tmp_path)
         db = Database(tmp_path)
         n_threads = 10
-        positions: list[int] = []
+        ids: list[int] = []
         errors: list[Exception] = []
+
+        # Ensure session exists first
+        db.ensure_session("race-session")
 
         def worker(idx: int):
             try:
-                pos = db.append_message("race-session", role="user", content=f"msg-{idx}")
-                positions.append(pos)
+                msg = ModelRequest(parts=[UserPromptPart(content=f"msg-{idx}")])
+                blob = ModelMessagesTypeAdapter.dump_json([msg])
+                id = db.add_message_blob("race-session", blob)
+                ids.append(id)
             except Exception as exc:
                 errors.append(exc)
 
@@ -175,23 +211,14 @@ class TestConcurrentAccess:
             t.join(timeout=30)
 
         assert not errors, f"Unexpected errors: {errors}"
-        assert len(positions) == n_threads
+        assert len(ids) == n_threads
+        assert len(set(ids)) == n_threads  # All unique
 
-        assert sorted(positions) == list(range(1, n_threads + 1))
+        rows = db.get_message_blobs("race-session")
+        assert len(rows) == n_threads
 
-        messages = db.get_all_messages("race-session")
-        assert len(messages) == n_threads
-        msg_positions = [m.position for m in messages]
-        assert len(set(msg_positions)) == n_threads
-
-        with db.engine.connect() as conn:
-            row = conn.execute(
-                sa.text("SELECT message_count FROM sessions WHERE key = 'race-session'")
-            ).fetchone()
-            assert row[0] == n_threads
-
-    def test_concurrent_mixed_session_creates_and_appends(self, tmp_path: Path) -> None:
-        """Mix of get_or_create and append_message across threads stays consistent."""
+    def test_concurrent_mixed_ensure_and_add(self, tmp_path: Path) -> None:
+        """Mix of ensure_session and add_message_blob across threads stays consistent."""
         upgrade_db(tmp_path)
         db = Database(tmp_path)
         n_threads = 8
@@ -199,14 +226,15 @@ class TestConcurrentAccess:
 
         def session_worker():
             try:
-                s = db.get_or_create_session("mixed-session")
-                assert s.key == "mixed-session"
+                db.ensure_session("mixed-session")
             except Exception as exc:
                 errors.append(exc)
 
         def append_worker(idx: int):
             try:
-                db.append_message("mixed-session", role="user", content=f"msg-{idx}")
+                msg = ModelRequest(parts=[UserPromptPart(content=f"msg-{idx}")])
+                blob = ModelMessagesTypeAdapter.dump_json([msg])
+                db.add_message_blob("mixed-session", blob)
             except Exception as exc:
                 errors.append(exc)
 
@@ -224,6 +252,5 @@ class TestConcurrentAccess:
 
         assert not errors, f"Unexpected errors: {errors}"
 
-        messages = db.get_all_messages("mixed-session")
-        msg_positions = sorted(m.position for m in messages)
-        assert msg_positions == list(range(1, len(messages) + 1))
+        rows = db.get_message_blobs("mixed-session")
+        assert len(rows) == n_threads // 2  # Half are append workers

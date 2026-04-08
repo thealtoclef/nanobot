@@ -1,209 +1,286 @@
+"""Tests for SessionManager using the new append-only API (no Session.messages)."""
+
 from __future__ import annotations
 
-from datetime import datetime
+import tempfile
 from pathlib import Path
 
 import pytest
+import pendulum
 
 from nanobot.db import Database, upgrade_db
 from nanobot.session.manager import Session, SessionManager
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    UserPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    SystemPromptPart,
+)
 
 
-class TestSessionDataclass:
-    def test_default_state(self) -> None:
-        s = Session(key="test:1")
-        assert s.messages == []
-        assert s.last_consolidated == 0
-        assert s.metadata == {}
+def make_user_message(content: str) -> ModelRequest:
+    return ModelRequest(parts=[UserPromptPart(content=content)])
 
-    def test_add_message_appends(self) -> None:
-        s = Session(key="test:1")
-        s.add_message("user", "hello")
-        assert len(s.messages) == 1
-        assert s.messages[0]["role"] == "user"
-        assert s.messages[0]["content"] == "hello"
-        assert "timestamp" in s.messages[0]
 
-    def test_add_message_with_kwargs(self) -> None:
-        s = Session(key="test:1")
-        s.add_message("assistant", "response", tool_calls=[{"id": "tc1"}])
-        assert s.messages[0]["tool_calls"] == [{"id": "tc1"}]
+def make_assistant_message(content: str) -> ModelResponse:
+    return ModelResponse(parts=[TextPart(content=content)])
 
-    def test_add_message_updates_timestamp(self) -> None:
-        s = Session(key="test:1")
-        before = s.updated_at
-        s.add_message("user", "hello")
-        assert s.updated_at >= before
 
-    def test_clear_resets_state(self) -> None:
-        s = Session(key="test:1")
-        s.add_message("user", "hello")
-        s.last_consolidated = 5
-        s.clear()
-        assert s.messages == []
-        assert s.last_consolidated == 0
+def make_tool_call_message(tool_name: str, tool_call_id: str, args: dict) -> ModelResponse:
+    return ModelResponse(
+        parts=[ToolCallPart(tool_name=tool_name, tool_call_id=tool_call_id, args=args)]
+    )
 
-    def test_get_history_empty(self) -> None:
-        s = Session(key="test:1")
-        assert s.get_history() == []
 
-    def test_get_history_returns_clean_entries(self) -> None:
-        s = Session(key="test:1")
-        s.add_message("user", "hello")
-        s.add_message("assistant", "hi", tool_calls=[{"id": "tc1"}])
-        history = s.get_history()
-        assert history[0]["role"] == "user"
-        assert history[0]["content"] == "hello"
-        assert history[1]["role"] == "assistant"
-        assert history[1]["tool_calls"] == [{"id": "tc1"}]
-        assert "timestamp" not in history[0]
-
-    def test_get_history_limits_messages(self) -> None:
-        s = Session(key="test:1")
-        for i in range(20):
-            s.add_message("user", f"msg{i}")
-        history = s.get_history(max_messages=5)
-        assert len(history) <= 5
-
-    def test_get_history_omits_none_content(self) -> None:
-        s = Session(key="test:1")
-        s.messages.append({"role": "user", "content": "q"})
-        s.messages.append({"role": "assistant", "content": None, "tool_calls": [{"id": "1"}]})
-        history = s.get_history()
-        assert history[1]["content"] is None
+def make_tool_result_message(tool_name: str, tool_call_id: str, content: str) -> ModelRequest:
+    return ModelRequest(
+        parts=[ToolReturnPart(tool_name=tool_name, tool_call_id=tool_call_id, content=content)]
+    )
 
 
 @pytest.fixture
-def manager(tmp_path: Path) -> SessionManager:
+def mgr(tmp_path: Path) -> SessionManager:
     upgrade_db(tmp_path)
     db = Database(tmp_path)
     return SessionManager(workspace=tmp_path, db=db)
 
 
-class TestSessionManagerGetOrCreate:
-    def test_returns_empty_session_for_new_key(self, manager: SessionManager) -> None:
-        session = manager.get_or_create("telegram:123")
+class TestSessionManagerEnsureSession:
+    """Tests for ensure_session (idempotent session creation)."""
+
+    def test_ensure_session_creates_row(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("telegram:123")
+        session = mgr.get_session("telegram:123")
         assert session.key == "telegram:123"
-        assert session.messages == []
-        assert session.last_consolidated == 0
 
-    def test_returns_same_key_on_repeat_call(self, manager: SessionManager) -> None:
-        s1 = manager.get_or_create("tg:1")
-        s2 = manager.get_or_create("tg:1")
-        assert s1.key == s2.key == "tg:1"
+    def test_ensure_session_idempotent(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("tg:1")
+        mgr.ensure_session("tg:1")  # no-op
+        session = mgr.get_session("tg:1")
+        assert session.key == "tg:1"
 
-    def test_sessions_are_isolated(self, manager: SessionManager) -> None:
-        s1 = manager.get_or_create("tg:1")
-        s1_copy = manager.get_or_create("tg:1")
-        s2 = manager.get_or_create("tg:2")
-        assert s1.key != s2.key
-        assert s1_copy.key == s1.key
+    def test_session_has_valid_timestamps(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("tg:ts")
+        session = mgr.get_session("tg:ts")
+        assert isinstance(session.created_at, pendulum.DateTime)
+        assert isinstance(session.updated_at, pendulum.DateTime)
 
-    def test_session_has_valid_timestamps(self, manager: SessionManager) -> None:
-        session = manager.get_or_create("tg:1")
-        assert isinstance(session.created_at, datetime)
-        assert isinstance(session.updated_at, datetime)
+    def test_session_initial_last_consolidated_is_none(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("tg:new")
+        session = mgr.get_session("tg:new")
+        assert session.last_consolidated_message_id is None
 
 
-class TestSessionManagerSave:
-    def test_save_and_reload_preserves_messages(self, manager: SessionManager) -> None:
-        session = manager.get_or_create("tg:save")
-        session.add_message("user", "hello")
-        session.add_message("assistant", "hi there")
-        manager.save(session)
+class TestSessionManagerAddMessages:
+    """Tests for add_message / add_messages (append-only blob storage)."""
 
-        loaded = manager.get_or_create("tg:save")
-        assert len(loaded.messages) == 2
-        assert loaded.messages[0]["role"] == "user"
-        assert loaded.messages[0]["content"] == "hello"
-        assert loaded.messages[1]["role"] == "assistant"
-        assert loaded.messages[1]["content"] == "hi there"
+    def test_add_single_message(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:add1")
+        msg = make_user_message("hello")
+        row_id = mgr.add_message("test:add1", msg)
+        assert row_id > 0
 
-    def test_save_replaces_existing_messages(self, manager: SessionManager) -> None:
-        session = manager.get_or_create("tg:replace")
-        session.add_message("user", "old msg")
-        manager.save(session)
+    def test_add_messages_returns_last_row_id(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:addmulti")
+        msgs = [make_user_message("hi"), make_assistant_message("hello")]
+        row_id = mgr.add_messages("test:addmulti", msgs)
+        assert row_id > 0
 
-        session.clear()
-        session.add_message("user", "new msg")
-        manager.save(session)
+    def test_get_all_messages_returns_persisted(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:getall")
+        msgs = [make_user_message("hi"), make_assistant_message("hello")]
+        mgr.add_messages("test:getall", msgs)
+        retrieved = mgr.get_all_messages("test:getall")
+        assert len(retrieved) == 2
 
-        loaded = manager.get_or_create("tg:replace")
-        assert len(loaded.messages) == 1
-        assert loaded.messages[0]["content"] == "new msg"
+    def test_get_all_messages_preserves_order(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:order")
+        msgs = [
+            make_user_message("first"),
+            make_assistant_message("second"),
+            make_user_message("third"),
+        ]
+        mgr.add_messages("test:order", msgs)
+        retrieved = mgr.get_all_messages("test:order")
+        assert len(retrieved) == 3
 
-    def test_save_persists_last_consolidated(self, manager: SessionManager) -> None:
-        session = manager.get_or_create("tg:cons")
-        session.add_message("user", "hello")
-        session.last_consolidated = 1
-        manager.save(session)
+    def test_multiple_blobs_accumulate(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:blobs")
+        mgr.add_message("test:blobs", make_user_message("msg1"))
+        mgr.add_message("test:blobs", make_user_message("msg2"))
+        retrieved = mgr.get_all_messages("test:blobs")
+        assert len(retrieved) == 2
 
-        loaded = manager.get_or_create("tg:cons")
-        assert loaded.last_consolidated == 1
 
-    def test_save_preserves_tool_call_data(self, manager: SessionManager) -> None:
-        session = manager.get_or_create("tg:tools")
-        session.add_message("user", "do thing")
-        tool_calls_json = '[{"id": "tc_1", "type": "function", "function": {"name": "my_tool", "arguments": "{}"}}]'
-        session.messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls_json})
-        session.messages.append(
-            {"role": "tool", "content": "result", "tool_call_id": "tc_1", "name": "my_tool"}
-        )
-        manager.save(session)
+class TestSessionManagerGetUnconsolidatedMessages:
+    """Tests for get_unconsolidated_messages (filters by last_consolidated boundary)."""
 
-        loaded = manager.get_or_create("tg:tools")
-        assert len(loaded.messages) == 3
-        assert loaded.messages[1]["tool_calls"] == tool_calls_json
-        assert loaded.messages[2]["tool_call_id"] == "tc_1"
-        assert loaded.messages[2]["name"] == "my_tool"
+    def test_empty_session_returns_empty_list(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:empty")
+        uncons = mgr.get_unconsolidated_messages("test:empty")
+        assert uncons == []
+
+    def test_unconsolidated_returns_all_when_no_boundary(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:noboundary")
+        msgs = [make_user_message("hi"), make_assistant_message("there")]
+        mgr.add_messages("test:noboundary", msgs)
+        uncons = mgr.get_unconsolidated_messages("test:noboundary")
+        assert len(uncons) == 2
+
+    def test_unconsolidated_filters_by_boundary(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:boundary")
+        # Add messages as separate blobs so we can set boundary between them
+        mgr.add_message("test:boundary", make_user_message("old"))
+        mgr.add_message("test:boundary", make_assistant_message("mid"))
+        mgr.add_message("test:boundary", make_user_message("new"))
+        # Get the row id of the second message (index 1)
+        second_row_id = mgr.get_boundary_message_id("test:boundary", 1)
+        assert second_row_id is not None
+        # Set boundary after second message (so "new" is unconsolidated)
+        mgr.update_last_consolidated_message_id("test:boundary", second_row_id)
+        uncons = mgr.get_unconsolidated_messages("test:boundary")
+        assert len(uncons) == 1  # only "new" is unconsolidated
+
+    def test_boundary_filters_multiple_blobs(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:multiboundary")
+        mgr.add_message("test:multiboundary", make_user_message("msg1"))
+        mgr.add_message("test:multiboundary", make_user_message("msg2"))
+        mgr.add_message("test:multiboundary", make_user_message("msg3"))
+        # Set boundary after second message
+        second_row_id = mgr.get_boundary_message_id("test:multiboundary", 1)
+        assert second_row_id is not None
+        mgr.update_last_consolidated_message_id("test:multiboundary", second_row_id)
+        uncons = mgr.get_unconsolidated_messages("test:multiboundary")
+        assert len(uncons) == 1
+
+
+class TestSessionManagerUpdateLastConsolidated:
+    """Tests for update_last_consolidated_message_id."""
+
+    def test_update_boundary(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:updateboundary")
+        msgs = [make_user_message("a"), make_assistant_message("b")]
+        mgr.add_messages("test:updateboundary", msgs)
+        first_row_id = mgr.get_boundary_message_id("test:updateboundary", 0)
+        assert first_row_id is not None
+        mgr.update_last_consolidated_message_id("test:updateboundary", first_row_id)
+        session = mgr.get_session("test:updateboundary")
+        assert session.last_consolidated_message_id == first_row_id
+
+
+class TestSessionManagerDeleteAllMessages:
+    """Tests for delete_all_messages (resets boundary too)."""
+
+    def test_delete_all_messages(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:deleteall")
+        mgr.add_message("test:deleteall", make_user_message("msg1"))
+        mgr.add_message("test:deleteall", make_user_message("msg2"))
+        mgr.delete_all_messages("test:deleteall")
+        assert mgr.get_all_messages("test:deleteall") == []
+
+    def test_delete_resets_consolidation_boundary(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:deletereset")
+        mgr.add_message("test:deletereset", make_user_message("msg1"))
+        first_row_id = mgr.get_boundary_message_id("test:deletereset", 0)
+        assert first_row_id is not None
+        mgr.update_last_consolidated_message_id("test:deletereset", first_row_id)
+        mgr.delete_all_messages("test:deletereset")
+        session = mgr.get_session("test:deletereset")
+        assert session.last_consolidated_message_id is None
+
+
+class TestSessionManagerRoundTrip:
+    """End-to-end round-trip tests: add → get → verify."""
+
+    def test_add_and_retrieve_user_message(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:roundtrip1")
+        msg = make_user_message("what is 2+2?")
+        mgr.add_message("test:roundtrip1", msg)
+        retrieved = mgr.get_all_messages("test:roundtrip1")
+        assert len(retrieved) == 1
+        assert isinstance(retrieved[0], ModelRequest)
+        part = retrieved[0].parts[0]
+        assert isinstance(part, UserPromptPart)
+        assert part.content == "what is 2+2?"
+
+    def test_add_and_retrieve_assistant_message(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:roundtrip2")
+        msg = make_assistant_message("4")
+        mgr.add_message("test:roundtrip2", msg)
+        retrieved = mgr.get_all_messages("test:roundtrip2")
+        assert len(retrieved) == 1
+        assert isinstance(retrieved[0], ModelResponse)
+        part = retrieved[0].parts[0]
+        assert isinstance(part, TextPart)
+        assert part.content == "4"
+
+    def test_add_and_retrieve_tool_call_message(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:roundtrip3")
+        msg = make_tool_call_message("read_file", "call_1", {"path": "/etc/hosts"})
+        mgr.add_message("test:roundtrip3", msg)
+        retrieved = mgr.get_all_messages("test:roundtrip3")
+        assert len(retrieved) == 1
+        assert isinstance(retrieved[0], ModelResponse)
+        tool_part = retrieved[0].parts[0]
+        assert isinstance(tool_part, ToolCallPart)
+        assert tool_part.tool_name == "read_file"
+        assert tool_part.tool_call_id == "call_1"
+
+    def test_add_and_retrieve_tool_result_message(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:roundtrip4")
+        msg = make_tool_result_message("read_file", "call_1", "127.0.0.1 localhost")
+        mgr.add_message("test:roundtrip4", msg)
+        retrieved = mgr.get_all_messages("test:roundtrip4")
+        assert len(retrieved) == 1
+        assert isinstance(retrieved[0], ModelRequest)
+        tool_part = retrieved[0].parts[0]
+        assert isinstance(tool_part, ToolReturnPart)
+        assert tool_part.content == "127.0.0.1 localhost"
+
+    def test_multiple_sessions_independent(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:indep1")
+        mgr.ensure_session("test:indep2")
+        mgr.add_message("test:indep1", make_user_message("session 1 msg"))
+        mgr.add_message("test:indep2", make_user_message("session 2 msg"))
+        retrieved1 = mgr.get_all_messages("test:indep1")
+        retrieved2 = mgr.get_all_messages("test:indep2")
+        assert len(retrieved1) == 1
+        assert len(retrieved2) == 1
+        part1 = retrieved1[0].parts[0]
+        part2 = retrieved2[0].parts[0]
+        assert isinstance(part1, UserPromptPart)
+        assert isinstance(part2, UserPromptPart)
+        assert "session 1" in part1.content
+        assert "session 2" in part2.content
 
 
 class TestSessionManagerTouch:
-    def test_touch_updates_activity(self, manager: SessionManager) -> None:
-        session = manager.get_or_create("tg:touch")
-        original_updated = session.updated_at
-        manager.touch("tg:touch")
+    """Tests for touch (updates updated_at)."""
 
-        loaded = manager.get_or_create("tg:touch")
-        assert loaded.updated_at >= original_updated
+    def test_touch_updates_timestamp(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("test:touch")
+        original = mgr.get_session("test:touch").updated_at
+        import time
+
+        time.sleep(0.01)
+        mgr.touch("test:touch")
+        updated = mgr.get_session("test:touch").updated_at
+        assert updated > original
 
 
 class TestSessionManagerListSessions:
-    def test_list_sessions_returns_empty(self, manager: SessionManager) -> None:
-        assert manager.list_sessions() == []
+    """Tests for list_sessions."""
 
+    def test_list_sessions_empty(self, mgr: SessionManager) -> None:
+        assert mgr.list_sessions() == []
 
-class TestSessionManagerEndToEnd:
-    def test_full_lifecycle(self, manager: SessionManager) -> None:
-        session = manager.get_or_create("tg:e2e")
-        session.add_message("user", "what is 2+2?")
-        session.add_message("assistant", "4")
-        manager.save(session)
-
-        loaded = manager.get_or_create("tg:e2e")
-        assert len(loaded.messages) == 2
-
-        loaded.add_message("user", "thanks!")
-        manager.save(loaded)
-
-        final = manager.get_or_create("tg:e2e")
-        assert len(final.messages) == 3
-        assert final.messages[2]["content"] == "thanks!"
-
-    def test_multiple_sessions_independent(self, manager: SessionManager) -> None:
-        s1 = manager.get_or_create("tg:1")
-        s2 = manager.get_or_create("tg:2")
-
-        s1.add_message("user", "session 1 msg")
-        s2.add_message("user", "session 2 msg")
-
-        manager.save(s1)
-        manager.save(s2)
-
-        loaded1 = manager.get_or_create("tg:1")
-        loaded2 = manager.get_or_create("tg:2")
-
-        assert len(loaded1.messages) == 1
-        assert loaded1.messages[0]["content"] == "session 1 msg"
-        assert len(loaded2.messages) == 1
-        assert loaded2.messages[0]["content"] == "session 2 msg"
+    def test_list_sessions_returns_all(self, mgr: SessionManager) -> None:
+        mgr.ensure_session("tg:a")
+        mgr.ensure_session("tg:b")
+        sessions = mgr.list_sessions()
+        keys = [s["key"] for s in sessions]
+        assert "tg:a" in keys
+        assert "tg:b" in keys
