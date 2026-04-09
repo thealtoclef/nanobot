@@ -82,7 +82,7 @@ async def cmd_new(ctx: CommandContext) -> OutboundMessage:
     loop.sessions.ensure_session(ctx.key)
     snapshot = loop.sessions.get_unconsolidated_messages(ctx.key)
     if snapshot:
-        await loop.history_compressor.summarize_and_extract(snapshot)
+        await loop.history_compressor.summarize_and_extract(ctx.key, snapshot)
     loop.sessions.clear_session_for_new(ctx.key)
     return OutboundMessage(
         channel=ctx.msg.channel,
