@@ -114,3 +114,15 @@ class SessionManager:
     def list_sessions(self) -> list[dict[str, Any]]:
         """List all sessions."""
         return self._db.list_sessions()
+
+    def get_facts(self, session_key: str) -> list[Any]:
+        """Get all facts for session."""
+        return self._db.get_facts(session_key)
+
+    def get_current_history_row(self, session_key: str) -> Any:
+        """Get current history row for session."""
+        return self._db.get_current_history_row(session_key)
+
+    def get_all_histories(self, session_key: str) -> list[Any]:
+        """Get all history rows for session, ordered by id."""
+        return self._db.get_all_histories(session_key)

@@ -76,8 +76,8 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
     )
 
 
-async def cmd_new(ctx: CommandContext) -> OutboundMessage:
-    """Start a fresh session."""
+async def cmd_compact(ctx: CommandContext) -> OutboundMessage:
+    """Compress conversation history into a summary and facts, then start fresh."""
     loop = ctx.loop
     loop.sessions.ensure_session(ctx.key)
     snapshot = loop.sessions.get_unconsolidated_messages(ctx.key)
@@ -106,7 +106,7 @@ def build_help_text() -> str:
     """Build canonical help text shared across channels."""
     lines = [
         "🐈 nanobot commands:",
-        "/new — Start a new conversation",
+        "/compact — Compress history and start fresh",
         "/stop — Stop the current task",
         "/restart — Restart the bot",
         "/status — Show bot status",
@@ -120,6 +120,5 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.priority("/stop", cmd_stop)
     router.priority("/restart", cmd_restart)
     router.priority("/status", cmd_status)
-    router.exact("/new", cmd_new)
-    router.exact("/status", cmd_status)
+    router.exact("/compact", cmd_compact)
     router.exact("/help", cmd_help)

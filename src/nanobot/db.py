@@ -308,9 +308,11 @@ class Database:
         """Get session row, follow current_history_id FK, return HistoryRow or None."""
         with self.SessionFactory() as db:
             session = db.get(SessionRow, session_key)
-            if session is None or session.current_history_id is None:
+            if session is None:
                 return None
-            return db.get(HistoryRow, session.current_history_id)
+            if session.current_history_id is not None:
+                return db.get(HistoryRow, session.current_history_id)
+            return None
 
     def get_summarized_through_message_id(self, session_key: str) -> int | None:
         """Get current history row's summarized_through_message_id, or None."""
