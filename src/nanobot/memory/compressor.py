@@ -14,56 +14,13 @@ from nanobot.memory.history_store import HistoryStore
 from nanobot.memory.fact_store import FactStore
 from nanobot.utils.helpers import estimate_message_tokens
 
-# TODO: Track 4 will provide these
-from nanobot.agents.summarizer import SummarizerAgent, SummarizerDeps, SummarizerResult  # noqa: F401, E501
-from nanobot.agents.extractor import ExtractorAgent, ExtractorDeps, ExtractorResult  # noqa: F401, E501
-from nanobot.agents.helpers import format_messages_for_text  # noqa: F401, E501
+from nanobot.agents.summarizer import SummarizerAgent, SummarizerDeps, SummarizerResult
+from nanobot.agents.extractor import ExtractorAgent, ExtractorDeps, ExtractorResult
+from nanobot.agents.helpers import format_messages_for_text
 
 if TYPE_CHECKING:
-    from nanobot.agents.talker import Talker  # noqa: F401
-    from nanobot.session.manager import SessionManager  # noqa: F401
-
-
-# ---------------------------------------------------------------------------
-# Format helpers — NO dict conversion, direct ModelMessage → text
-# ---------------------------------------------------------------------------
-
-
-def format_messages_for_text(messages: list[ModelMessage]) -> str:
-    """Format ModelMessages into readable text for the summarizer/extractor prompt."""
-    from pydantic_ai.messages import (
-        ModelRequest,
-        ModelResponse,
-        UserPromptPart,
-        SystemPromptPart,
-        ToolReturnPart,
-        RetryPromptPart,
-        TextPart,
-        ToolCallPart,
-    )
-
-    lines: list[str] = []
-    for msg in messages:
-        if isinstance(msg, ModelRequest):
-            for part in msg.parts:
-                if isinstance(part, UserPromptPart):
-                    content = part.content
-                    if isinstance(content, list):
-                        content = " ".join(str(c) for c in content if isinstance(c, str))
-                    lines.append(f"USER: {content}")
-                elif isinstance(part, SystemPromptPart):
-                    lines.append(f"SYSTEM: {part.content}")
-                elif isinstance(part, ToolReturnPart):
-                    lines.append(f"TOOL [{part.tool_name}]: {part.content}")
-                elif isinstance(part, RetryPromptPart):
-                    lines.append(f"TOOL [{part.tool_name or 'unknown'}]: {part.content}")
-        elif isinstance(msg, ModelResponse):
-            for part in msg.parts:
-                if isinstance(part, TextPart):
-                    lines.append(f"ASSISTANT: {part.content}")
-                elif isinstance(part, ToolCallPart):
-                    lines.append(f"ASSISTANT [call {part.tool_name}]: {part.args}")
-    return "\n".join(lines)
+    from nanobot.agents.talker import Talker
+    from nanobot.session import SessionManager
 
 
 # ---------------------------------------------------------------------------
