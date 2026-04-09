@@ -1,4 +1,4 @@
-"""Tests for Database-backed MemoryStore and HistorySummarizer."""
+"""Tests for Database-backed MemoryStore and HistoryCompressor."""
 
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.test import TestModel
 
-from nanobot.agent.memory import (
+from nanobot.memory import (
     HistoryStore,
     FactStore,
-    HistorySummarizer,
+    HistoryCompressor,
     format_messages_for_summarizer,
     _summarizer_agent,
     _extractor_agent,
@@ -234,11 +234,11 @@ class TestFactStoreOperations:
 
 
 # ---------------------------------------------------------------------------
-# TestHistorySummarizerBoundary
+# TestHistoryCompressorBoundary
 # ---------------------------------------------------------------------------
 
 
-class TestHistorySummarizerBoundary:
+class TestHistoryCompressorBoundary:
     @pytest.fixture
     def db(self, tmp_path: Path) -> Database:
         from nanobot.db import Base
@@ -257,7 +257,7 @@ class TestHistorySummarizerBoundary:
         return blobs
 
     def test_boundary_returns_row_id(self, db: Database) -> None:
-        summarizer = HistorySummarizer(
+        summarizer = HistoryCompressor(
             db=db,
             agent=MagicMock(),
             sessions=MagicMock(),
@@ -269,7 +269,7 @@ class TestHistorySummarizerBoundary:
         assert isinstance(boundary, int)
 
     def test_no_boundary_empty_blobs(self, db: Database) -> None:
-        summarizer = HistorySummarizer(
+        summarizer = HistoryCompressor(
             db=db,
             agent=MagicMock(),
             sessions=MagicMock(),
@@ -279,7 +279,7 @@ class TestHistorySummarizerBoundary:
         assert boundary is None
 
     def test_no_boundary_zero_tokens(self, db: Database) -> None:
-        summarizer = HistorySummarizer(
+        summarizer = HistoryCompressor(
             db=db,
             agent=MagicMock(),
             sessions=MagicMock(),
@@ -290,7 +290,7 @@ class TestHistorySummarizerBoundary:
         assert boundary is None
 
     def test_boundary_finds_valid_row_id(self, db: Database) -> None:
-        summarizer = HistorySummarizer(
+        summarizer = HistoryCompressor(
             db=db,
             agent=MagicMock(),
             sessions=MagicMock(),
@@ -303,11 +303,11 @@ class TestHistorySummarizerBoundary:
 
 
 # ---------------------------------------------------------------------------
-# TestHistorySummarizerSummarize
+# TestHistoryCompressorSummarize
 # ---------------------------------------------------------------------------
 
 
-class TestHistorySummarizerSummarize:
+class TestHistoryCompressorSummarize:
     @pytest.fixture
     def db(self, tmp_path: Path) -> Database:
         from nanobot.db import Base
@@ -325,7 +325,7 @@ class TestHistorySummarizerSummarize:
 
     @pytest.mark.asyncio
     async def test_empty_returns_true(self, db: Database, tmp_path: Path) -> None:
-        summarizer = HistorySummarizer(
+        summarizer = HistoryCompressor(
             db=db,
             agent=MagicMock(),
             sessions=MagicMock(),
@@ -336,7 +336,7 @@ class TestHistorySummarizerSummarize:
 
     @pytest.mark.asyncio
     async def test_failure_returns_false(self, db: Database, tmp_path: Path) -> None:
-        summarizer = HistorySummarizer(
+        summarizer = HistoryCompressor(
             db=db,
             agent=MagicMock(),
             sessions=MagicMock(),
@@ -356,7 +356,7 @@ class TestHistorySummarizerSummarize:
         sessions_mock.get_unconsolidated_blobs_with_ids.return_value = []
         sessions_mock.update_current_history_id = MagicMock()
 
-        summarizer = HistorySummarizer(
+        summarizer = HistoryCompressor(
             db=db,
             agent=MagicMock(),
             sessions=sessions_mock,
@@ -365,7 +365,7 @@ class TestHistorySummarizerSummarize:
         summarizer.agent.pydantic_agent.model = _FailingModel()
 
         messages = _make_model_messages(5)
-        for _ in range(HistorySummarizer._MAX_FAILURES_BEFORE_RAW_SUMMARY - 1):
+        for _ in range(HistoryCompressor._MAX_FAILURES_BEFORE_RAW_SUMMARY - 1):
             await summarizer.summarize_messages("session:test", messages)
 
         with _summarizer_agent.override(model=_FailingModel()):
@@ -398,7 +398,7 @@ class TestFactExtraction:
         sessions_mock = MagicMock()
         sessions_mock.get_unconsolidated_blobs_with_ids.return_value = []
 
-        summarizer = HistorySummarizer(
+        summarizer = HistoryCompressor(
             db=db,
             agent=MagicMock(),
             sessions=sessions_mock,
@@ -426,7 +426,7 @@ class TestFactExtraction:
 
     @pytest.mark.asyncio
     async def test_no_facts_from_empty(self, db: Database, tmp_path: Path) -> None:
-        summarizer = HistorySummarizer(
+        summarizer = HistoryCompressor(
             db=db,
             agent=MagicMock(),
             sessions=MagicMock(),
@@ -441,7 +441,7 @@ class TestFactExtraction:
         sessions_mock = MagicMock()
         sessions_mock.get_unconsolidated_blobs_with_ids.return_value = []
 
-        summarizer = HistorySummarizer(
+        summarizer = HistoryCompressor(
             db=db,
             agent=MagicMock(),
             sessions=sessions_mock,

@@ -51,7 +51,7 @@ AgentDepsT = dict[str, Any]
 
 def build_instructions(workspace: Path) -> str:
     """Build PydanticAI instructions from bootstrap files and memory."""
-    from nanobot.agent._identity import build_identity
+    from nanobot._identity import build_identity
 
     parts = [build_identity(workspace)]
 
