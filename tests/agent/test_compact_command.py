@@ -142,13 +142,11 @@ class TestCompactCommand:
         assert len(remaining) == 2  # original messages still exist
 
         # Verify: history row created with summary
-        # Note: current_history_id is cleared by clear_session_for_new, so use get_all_histories
         histories = runner.sessions.get_all_histories("test-session")
         assert len(histories) >= 1
         history_row = histories[-1]  # most recent
         assert "Compressed session summary" in history_row.summary
-        # Note: summarized_through_message_id may be NULL after compact since
-        # clear_session_for_new deletes messages, but we still have the summary
+        # summarized_through_message_id points to the last compacted message row
 
         # Verify: facts extracted
         facts = runner.sessions.get_facts("test-session")
@@ -157,7 +155,7 @@ class TestCompactCommand:
         assert any("prefers concise" in c for c in contents)
         assert any("Python project" in c for c in contents)
 
-        # Verify: session still exists (current_history_id is cleared by clear_session_for_new)
+        # Verify: session still exists with current_history_id pointing to the new history row
         session = runner.sessions.get_session("test-session")
         assert session is not None
 

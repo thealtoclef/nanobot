@@ -5,14 +5,13 @@ from __future__ import annotations
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
-    UserPromptPart,
-    SystemPromptPart,
-    ToolReturnPart,
     RetryPromptPart,
+    SystemPromptPart,
     TextPart,
     ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
 )
-
 
 # Files that are loaded to build agent identity/instructions
 BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"]

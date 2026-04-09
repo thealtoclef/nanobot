@@ -9,15 +9,14 @@ from typing import Any
 
 from loguru import logger
 
+from nanobot.bus.events import InboundMessage
+from nanobot.bus.queue import MessageBus
+from nanobot.config.schema import ExecToolConfig, WebToolsConfig
 from nanobot.skill_loader import BUILTIN_SKILLS_DIR
 from nanobot.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.tools.registry import ToolRegistry
 from nanobot.tools.shell import ExecTool
 from nanobot.tools.web import WebFetchTool, WebSearchTool
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import ExecToolConfig, WebToolsConfig
-
 
 _SUBAGENT_SYSTEM_PROMPT = """\
 # Subagent

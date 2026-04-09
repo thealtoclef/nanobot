@@ -3,19 +3,6 @@
 import base64
 import json
 import re
-
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    UserPromptPart,
-    SystemPromptPart,
-    ToolReturnPart,
-    RetryPromptPart,
-    TextPart,
-    ToolCallPart,
-    ThinkingPart,
-)
 import shutil
 import time
 import uuid
@@ -25,6 +12,17 @@ from typing import Any
 
 import tiktoken
 from loguru import logger
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    SystemPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 
 def strip_think(text: str) -> str:

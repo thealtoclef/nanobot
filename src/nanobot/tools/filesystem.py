@@ -5,9 +5,9 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
+from nanobot.config.paths import get_media_dir
 from nanobot.tools.base import Tool
 from nanobot.utils.helpers import build_image_content_blocks, detect_image_mime
-from nanobot.config.paths import get_media_dir
 
 
 def _resolve_path(

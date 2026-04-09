@@ -2,7 +2,6 @@
 
 import base64
 import mimetypes
-import platform
 from pathlib import Path
 from typing import Any
 
@@ -12,11 +11,9 @@ from pydantic_ai.messages import (
     SystemPromptPart,
 )
 
-from nanobot.utils.helpers import current_time_str
-
 from nanobot.db import Database
 from nanobot.skill_loader import SkillsLoader
-from nanobot.utils.helpers import build_assistant_message, detect_image_mime
+from nanobot.utils.helpers import build_assistant_message, current_time_str, detect_image_mime
 
 
 class ContextBuilder:

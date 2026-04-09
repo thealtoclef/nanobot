@@ -5,9 +5,9 @@ from typing import Any
 
 import pendulum
 from pydantic import BaseModel
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 
 from nanobot.db import Database
-from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelMessage
 
 
 class Session(BaseModel):
@@ -56,7 +56,7 @@ class SessionManager:
         return result
 
     def get_unconsolidated_messages(self, session_key: str) -> list[ModelMessage]:
-        """Get messages where id > last_consolidated_message_id."""
+        """Get messages after the current history boundary (id > summarized_through_message_id)."""
         boundary = self._db.get_summarized_through_message_id(session_key)
         if boundary is None:
             rows = self._db.get_unconsolidated_message_blobs(session_key, None)
@@ -102,10 +102,6 @@ class SessionManager:
     def delete_all_messages(self, session_key: str) -> None:
         """Delete all messages. Resets consolidation boundary."""
         self._db.delete_all_messages(session_key)
-
-    def clear_session_for_new(self, session_key: str) -> None:
-        """For /new command: delete messages, clear history pointer, keep facts."""
-        self._db.clear_session_for_new(session_key)
 
     def touch(self, session_key: str) -> None:
         """Update updated_at."""

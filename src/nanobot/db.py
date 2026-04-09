@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from pathlib import Path
+from typing import Any
 
 import pendulum
 import sqlalchemy
@@ -18,7 +17,6 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -133,9 +131,10 @@ def make_session_factory(engine: sqlalchemy.Engine):
 
 def upgrade_db(workspace: Path) -> None:
     """Run alembic migrations to bring DB schema up to date."""
+    import importlib.resources
+
     from alembic import command
     from alembic.config import Config
-    import importlib.resources
 
     db_path = workspace / "sessions.db"
     # Ensure directory exists
@@ -401,15 +400,3 @@ class Database:
         if len(digest) > max_chars:
             digest = digest[:max_chars] + "..."
         return digest
-
-    def clear_session_for_new(self, session_key: str) -> None:
-        """Delete all messages for session, set current_history_id=None, facts untouched."""
-        now_ms = self._now_ms()
-        with self.SessionFactory() as db:
-            db.query(MessageRow).filter(MessageRow.session_key == session_key).delete()
-            db.execute(
-                update(SessionRow)
-                .where(SessionRow.key == session_key)
-                .values(current_history_id=None, updated_at=now_ms)
-            )
-            db.commit()

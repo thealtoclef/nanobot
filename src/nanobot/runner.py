@@ -15,10 +15,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
+from pydantic_ai.messages import ModelMessage
 
 from nanobot.agents.talker import TalkerAgent, _to_user_content
+from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.queue import MessageBus
+from nanobot.command.builtin import register_builtin_commands
+from nanobot.command.router import CommandRouter
 from nanobot.context import ContextBuilder
+from nanobot.db import Database
 from nanobot.memory.compressor import HistoryCompressor
+from nanobot.session import SessionManager
 from nanobot.skill_loader import BUILTIN_SKILLS_DIR
 from nanobot.tools.cron import CronTool
 from nanobot.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -27,13 +34,6 @@ from nanobot.tools.registry import ToolRegistry
 from nanobot.tools.shell import ExecTool
 from nanobot.tools.spawn import SpawnTool
 from nanobot.tools.web import WebFetchTool, WebSearchTool
-from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.command.router import CommandRouter
-from nanobot.command.builtin import register_builtin_commands
-from nanobot.db import Database
-from nanobot.session import SessionManager
-from pydantic_ai.messages import ModelMessage
 
 if TYPE_CHECKING:
     from nanobot.config.schema import (
@@ -88,7 +88,8 @@ class AgentRunner:
         skills_directories: list[Path] | None = None,
         **kwargs: Any,
     ) -> None:
-        from nanobot.config.schema import ExecToolConfig as ExecCfg, WebToolsConfig as WebCfg
+        from nanobot.config.schema import ExecToolConfig as ExecCfg
+        from nanobot.config.schema import WebToolsConfig as WebCfg
 
         self.workspace = workspace
         self.models = models
@@ -406,7 +407,6 @@ class AgentRunner:
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
-        from nanobot.utils.helpers import image_placeholder_text, truncate_text
 
         # System messages: inject from subagent result
         if msg.channel == "system":
@@ -679,11 +679,11 @@ class AgentRunner:
         from pydantic_ai.messages import (
             ModelRequest,
             ModelResponse,
+            SystemPromptPart,
             TextPart,
             ToolCallPart,
             ToolReturnPart,
             UserPromptPart,
-            SystemPromptPart,
         )
 
         if isinstance(msg, ModelRequest):
@@ -723,9 +723,9 @@ class AgentRunner:
         from pydantic_ai.messages import (
             ModelRequest,
             ModelResponse,
-            ToolReturnPart,
-            ToolCallPart,
             TextPart,
+            ToolCallPart,
+            ToolReturnPart,
         )
 
         assistant_message = checkpoint.get("assistant_message")

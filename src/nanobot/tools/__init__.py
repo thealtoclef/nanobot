@@ -3,8 +3,8 @@
 from nanobot.tools.base import Tool
 from nanobot.tools.cron import CronTool
 from nanobot.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
-from nanobot.tools.message import MessageTool
 from nanobot.tools.mcp import MCPToolWrapper, connect_mcp_servers
+from nanobot.tools.message import MessageTool
 from nanobot.tools.registry import ToolRegistry
 from nanobot.tools.shell import ExecTool
 from nanobot.tools.spawn import SpawnTool

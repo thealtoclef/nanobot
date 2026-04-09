@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pydantic_ai.messages import ModelMessage
+
 from nanobot.agents.talker import TalkerAgent
 from nanobot.bus.queue import MessageBus
 from nanobot.db import Database
 from nanobot.session import SessionManager
-from pydantic_ai.messages import ModelMessage
 
 
 @dataclass(slots=True)

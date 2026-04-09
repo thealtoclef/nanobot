@@ -7,16 +7,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
-from pydantic import BaseModel, Field
 from pydantic_ai.messages import ModelMessage
 
-from nanobot.memory.history_store import HistoryStore
-from nanobot.memory.fact_store import FactStore
-from nanobot.utils.helpers import estimate_message_tokens
-
-from nanobot.agents.summarizer import SummarizerAgent, SummarizerDeps, SummarizerResult
 from nanobot.agents.extractor import ExtractorAgent, ExtractorDeps, ExtractorResult
 from nanobot.agents.helpers import format_messages_for_text
+from nanobot.agents.summarizer import SummarizerAgent, SummarizerDeps, SummarizerResult
+from nanobot.memory.fact_store import FactStore
+from nanobot.memory.history_store import HistoryStore
+from nanobot.utils.helpers import estimate_message_tokens
 
 if TYPE_CHECKING:
     from nanobot.agents.talker import Talker
@@ -249,22 +247,3 @@ class HistoryCompressor:
 
 
 # ---------------------------------------------------------------------------
-# Backward-compatibility aliases
-# ---------------------------------------------------------------------------
-
-
-class MemoryStore:
-    """Compatibility stub — use HistoryStore or FactStore directly."""
-
-    def __init__(self, db: Any, session_key: str):
-        self._db = db
-        self._session_key = session_key
-
-    def get_memory_context(self) -> str:
-        """Return formatted facts as context (new API) or empty str."""
-        store = FactStore(self._db, self._session_key)
-        digest = store.get_digest()
-        return f"## Long-term Memory\n{digest}" if digest else ""
-
-
-MemoryConsolidator = HistoryCompressor  # type: ignore[misc]

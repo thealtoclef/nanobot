@@ -24,6 +24,7 @@ API_CHAT_ID = "default"
 # Response helpers
 # ---------------------------------------------------------------------------
 
+
 def _error_json(status: int, message: str, err_type: str = "invalid_request_error") -> web.Response:
     return web.json_response(
         {"error": {"message": message, "type": err_type, "code": status}},
@@ -60,6 +61,7 @@ def _response_text(value: Any) -> str:
 # ---------------------------------------------------------------------------
 # Route handlers
 # ---------------------------------------------------------------------------
+
 
 async def handle_chat_completions(request: web.Request) -> web.Response:
     """POST /v1/chat/completions"""
@@ -153,17 +155,19 @@ async def handle_chat_completions(request: web.Request) -> web.Response:
 async def handle_models(request: web.Request) -> web.Response:
     """GET /v1/models"""
     model_name = request.app.get("model_name", "nanobot")
-    return web.json_response({
-        "object": "list",
-        "data": [
-            {
-                "id": model_name,
-                "object": "model",
-                "created": 0,
-                "owned_by": "nanobot",
-            }
-        ],
-    })
+    return web.json_response(
+        {
+            "object": "list",
+            "data": [
+                {
+                    "id": model_name,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "nanobot",
+                }
+            ],
+        }
+    )
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -175,7 +179,10 @@ async def handle_health(request: web.Request) -> web.Response:
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_app(agent_loop, model_name: str = "nanobot", request_timeout: float = 120.0) -> web.Application:
+
+def create_app(
+    agent_loop, model_name: str = "nanobot", request_timeout: float = 120.0
+) -> web.Application:
     """Create the aiohttp application.
 
     Args:

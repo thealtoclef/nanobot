@@ -1,12 +1,11 @@
 """CLI commands for nanobot."""
 
 import asyncio
-from contextlib import contextmanager, nullcontext
-
 import os
 import select
 import signal
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Literal
 
@@ -494,6 +493,7 @@ def _load_runtime_config(config: str | None = None, workspace: str | None = None
 def _warn_deprecated_config_keys(config_path: Path | None) -> None:
     """Hint users to remove obsolete keys from their config file."""
     import json
+
     from nanobot.config.loader import get_config_path
 
     path = config_path or get_config_path()
@@ -545,9 +545,10 @@ def serve(
         raise typer.Exit(1)
 
     from loguru import logger
-    from nanobot.runner import AgentRunner
+
     from nanobot.api.server import create_app
     from nanobot.bus.queue import MessageBus
+    from nanobot.runner import AgentRunner
     from nanobot.session import SessionManager
 
     if verbose:
@@ -620,12 +621,12 @@ def gateway(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Start the nanobot gateway."""
-    from nanobot.runner import AgentRunner
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
+    from nanobot.runner import AgentRunner
     from nanobot.session import SessionManager
 
     if verbose:
@@ -847,9 +848,9 @@ def agent(
     """Interact with the agent directly."""
     from loguru import logger
 
-    from nanobot.runner import AgentRunner
     from nanobot.bus.queue import MessageBus
     from nanobot.cron.service import CronService
+    from nanobot.runner import AgentRunner
 
     config = _load_runtime_config(config, workspace)
     sync_workspace_templates(config.workspace_path)

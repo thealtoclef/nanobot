@@ -6,36 +6,21 @@ AgentRunner is a thin orchestrator layer around this agent.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
+from loguru import logger
 from pydantic_ai import Agent
 from pydantic_ai.agent import Agent as PydanticAIAgent
 from pydantic_ai.agent import RunContext
 from pydantic_ai.capabilities.hooks import Hooks
-
 from pydantic_ai.messages import (
-    AgentStreamEvent,
-    FunctionToolCallEvent,
-    FunctionToolResultEvent,
     ImageUrl,
     ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    RetryPromptPart,
-    SystemPromptPart,
-    TextPart,
-    ToolCallPart,
-    ToolReturnPart,
-    UserPromptPart,
 )
 from pydantic_ai_skills import SkillsCapability
 
-from loguru import logger
-
 from nanobot.agents.helpers import BOOTSTRAP_FILES
-
 
 # ---------------------------------------------------------------------------
 # Type aliases
