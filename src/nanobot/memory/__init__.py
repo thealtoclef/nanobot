@@ -1,7 +1,6 @@
-"""Backward compat — use nanobot.memory directly."""
+"""Memory system: storage + compression."""
 
-from nanobot.memory.compressor import HistoryCompressor as HistorySummarizer
-from nanobot.memory.compressor import MemoryStore
+from nanobot.memory.compressor import HistoryCompressor
 from nanobot.memory.history_store import HistoryStore
 from nanobot.memory.fact_store import FactStore
 from nanobot.agents.summarizer import SummarizerAgent, SummarizerDeps, SummarizerResult
@@ -14,10 +13,8 @@ from nanobot.agents.extractor import _extractor_agent
 
 __all__ = [
     "HistoryCompressor",
-    "HistorySummarizer",
     "HistoryStore",
     "FactStore",
-    "MemoryStore",
     "SummarizerAgent",
     "SummarizerDeps",
     "SummarizerResult",

@@ -9,7 +9,7 @@ import pytest
 import pendulum
 
 from nanobot.db import Database, upgrade_db
-from nanobot.session.manager import Session, SessionManager
+from nanobot.session import Session, SessionManager
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,

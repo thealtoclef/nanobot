@@ -2,7 +2,7 @@
 
 import pytest
 
-from nanobot.agent.tools.filesystem import (
+from nanobot.tools.filesystem import (
     EditFileTool,
     ListDirTool,
     ReadFileTool,
@@ -14,8 +14,8 @@ from nanobot.agent.tools.filesystem import (
 # ReadFileTool
 # ---------------------------------------------------------------------------
 
-class TestReadFileTool:
 
+class TestReadFileTool:
     @pytest.fixture()
     def tool(self, tmp_path):
         return ReadFileTool(workspace=tmp_path)
@@ -97,8 +97,8 @@ class TestReadFileTool:
 # _find_match  (unit tests for the helper)
 # ---------------------------------------------------------------------------
 
-class TestFindMatch:
 
+class TestFindMatch:
     def test_exact_match(self):
         match, count = _find_match("hello world", "world")
         assert match == "world"
@@ -143,8 +143,8 @@ class TestFindMatch:
 # EditFileTool
 # ---------------------------------------------------------------------------
 
-class TestEditFileTool:
 
+class TestEditFileTool:
     @pytest.fixture()
     def tool(self, tmp_path):
         return EditFileTool(workspace=tmp_path)
@@ -162,7 +162,9 @@ class TestEditFileTool:
         f = tmp_path / "crlf.py"
         f.write_bytes(b"line1\r\nline2\r\nline3")
         result = await tool.execute(
-            path=str(f), old_text="line1\nline2", new_text="LINE1\nLINE2",
+            path=str(f),
+            old_text="line1\nline2",
+            new_text="LINE1\nLINE2",
         )
         assert "Successfully" in result
         raw = f.read_bytes()
@@ -175,7 +177,9 @@ class TestEditFileTool:
         f = tmp_path / "indent.py"
         f.write_text("    def foo():\n        pass\n", encoding="utf-8")
         result = await tool.execute(
-            path=str(f), old_text="def foo():\n    pass", new_text="def bar():\n    return 1",
+            path=str(f),
+            old_text="def foo():\n    pass",
+            new_text="def bar():\n    return 1",
         )
         assert "Successfully" in result
         assert "bar" in f.read_text()
@@ -192,7 +196,10 @@ class TestEditFileTool:
         f = tmp_path / "multi.py"
         f.write_text("foo bar foo bar foo", encoding="utf-8")
         result = await tool.execute(
-            path=str(f), old_text="foo", new_text="baz", replace_all=True,
+            path=str(f),
+            old_text="foo",
+            new_text="baz",
+            replace_all=True,
         )
         assert "Successfully" in result
         assert f.read_text() == "baz bar baz bar baz"
@@ -217,8 +224,8 @@ class TestEditFileTool:
 # ListDirTool
 # ---------------------------------------------------------------------------
 
-class TestListDirTool:
 
+class TestListDirTool:
     @pytest.fixture()
     def tool(self, tmp_path):
         return ListDirTool(workspace=tmp_path)
@@ -287,8 +294,8 @@ class TestListDirTool:
 # Workspace restriction + extra_allowed_dirs
 # ---------------------------------------------------------------------------
 
-class TestWorkspaceRestriction:
 
+class TestWorkspaceRestriction:
     @pytest.mark.asyncio
     async def test_read_blocked_outside_workspace(self, tmp_path):
         workspace = tmp_path / "ws"
@@ -314,7 +321,8 @@ class TestWorkspaceRestriction:
         skill_file.write_text("# Test Skill\nDo something.")
 
         tool = ReadFileTool(
-            workspace=workspace, allowed_dir=workspace,
+            workspace=workspace,
+            allowed_dir=workspace,
             extra_allowed_dirs=[skills_dir],
         )
         result = await tool.execute(path=str(skill_file))
@@ -330,7 +338,7 @@ class TestWorkspaceRestriction:
         media_file = media_dir / "photo.txt"
         media_file.write_text("shared media", encoding="utf-8")
 
-        monkeypatch.setattr("nanobot.agent.tools.filesystem.get_media_dir", lambda: media_dir)
+        monkeypatch.setattr("nanobot.tools.filesystem.get_media_dir", lambda: media_dir)
 
         tool = ReadFileTool(workspace=workspace, allowed_dir=workspace)
         result = await tool.execute(path=str(media_file))
@@ -339,7 +347,7 @@ class TestWorkspaceRestriction:
 
     @pytest.mark.asyncio
     async def test_extra_dirs_does_not_widen_write(self, tmp_path):
-        from nanobot.agent.tools.filesystem import WriteFileTool
+        from nanobot.tools.filesystem import WriteFileTool
 
         workspace = tmp_path / "ws"
         workspace.mkdir()
@@ -363,7 +371,8 @@ class TestWorkspaceRestriction:
         secret.write_text("nope")
 
         tool = ReadFileTool(
-            workspace=workspace, allowed_dir=workspace,
+            workspace=workspace,
+            allowed_dir=workspace,
             extra_allowed_dirs=[skills_dir],
         )
         result = await tool.execute(path=str(secret))
@@ -381,7 +390,8 @@ class TestWorkspaceRestriction:
         skills_dir.mkdir()
 
         tool = ReadFileTool(
-            workspace=workspace, allowed_dir=workspace,
+            workspace=workspace,
+            allowed_dir=workspace,
             extra_allowed_dirs=[skills_dir],
         )
         result = await tool.execute(path=str(ws_file))

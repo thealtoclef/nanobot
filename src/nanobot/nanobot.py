@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.agent import Talker
+from nanobot.agents.talker import TalkerAgent
 from nanobot.bus.queue import MessageBus
 from nanobot.db import Database
-from nanobot.session.manager import SessionManager
+from nanobot.session import SessionManager
 from pydantic_ai.messages import ModelMessage
 
 
@@ -34,7 +34,7 @@ class Nanobot:
 
     def __init__(
         self,
-        agent: Talker,
+        agent: TalkerAgent,
         bus: MessageBus,
         workspace: Path,
         *,
@@ -99,7 +99,7 @@ class Nanobot:
         ]
 
         # Create PydanticAI-based agent
-        agent = Talker(
+        agent = TalkerAgent(
             workspace=workspace_path,
             models=resolved_models,
             max_iterations=agent_config.max_tool_iterations,

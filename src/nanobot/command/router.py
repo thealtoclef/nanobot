@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
     from nanobot.bus.events import InboundMessage, OutboundMessage
-    from nanobot.session.manager import Session
+    from nanobot.session import Session
 
 Handler = Callable[["CommandContext"], Awaitable["OutboundMessage | None"]]
 
@@ -73,7 +73,7 @@ class CommandRouter:
 
         for pfx, handler in self._prefix:
             if cmd.startswith(pfx):
-                ctx.args = ctx.raw[len(pfx):]
+                ctx.args = ctx.raw[len(pfx) :]
                 return await handler(ctx)
 
         for interceptor in self._interceptors:

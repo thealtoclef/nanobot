@@ -1,8 +1,8 @@
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.shell import ExecTool
+from nanobot.tools.base import Tool
+from nanobot.tools.registry import ToolRegistry
+from nanobot.tools.shell import ExecTool
 
 
 class SampleTool(Tool):
@@ -148,7 +148,7 @@ def test_exec_guard_allows_media_path_outside_workspace(tmp_path, monkeypatch) -
     media_file = media_dir / "photo.jpg"
     media_file.write_text("ok", encoding="utf-8")
 
-    monkeypatch.setattr("nanobot.agent.tools.shell.get_media_dir", lambda: media_dir)
+    monkeypatch.setattr("nanobot.tools.shell.get_media_dir", lambda: media_dir)
 
     tool = ExecTool(restrict_to_workspace=True)
     error = tool._guard_command(f'cat "{media_file}"', str(tmp_path / "workspace"))
@@ -156,7 +156,7 @@ def test_exec_guard_allows_media_path_outside_workspace(tmp_path, monkeypatch) -
 
 
 def test_exec_guard_blocks_windows_drive_root_outside_workspace(monkeypatch) -> None:
-    import nanobot.agent.tools.shell as shell_mod
+    import nanobot.tools.shell as shell_mod
 
     class FakeWindowsPath:
         def __init__(self, raw: str) -> None:
@@ -441,9 +441,7 @@ async def test_exec_head_tail_truncation() -> None:
     tool = ExecTool()
     # Generate output that exceeds _MAX_OUTPUT (10_000 chars)
     # Use python to generate output to avoid command line length limits
-    result = await tool.execute(
-        command="python3 -c \"print('A' * 6000 + '\\n' + 'B' * 6000)\""
-    )
+    result = await tool.execute(command="python3 -c \"print('A' * 6000 + '\\n' + 'B' * 6000)\"")
     assert "chars truncated" in result
     # Head portion should start with As
     assert result.startswith("A")

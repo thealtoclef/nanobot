@@ -12,7 +12,7 @@ from pydantic_ai import ModelResponse, TextPart
 from pydantic_ai.messages import ModelRequest, ModelMessage, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from nanobot.agent.subagent import SubagentManager
+from nanobot.subagent import SubagentManager
 
 
 def _make_subagent_mock() -> MagicMock:

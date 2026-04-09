@@ -20,8 +20,9 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.test import TestModel
 
-from nanobot.agent.agent import (
+from nanobot.agents.talker import (
     BOOTSTRAP_FILES,
+    TalkerAgent,
     Talker,
     ToolAdapter,
     build_instructions,
@@ -79,7 +80,7 @@ def _make_nanobot_agent_with_testmodel(
 
     with (
         patch("pydantic_ai.models.fallback.FallbackModel") as mock_fb,
-        patch("nanobot.agent.agent.Agent", return_value=real_agent),
+        patch("nanobot.agents.talker.Agent", return_value=real_agent),
     ):
         mock_fb.return_value = MagicMock()
         agent = Talker(
@@ -250,7 +251,7 @@ class TestNanobotAgent:
             Talker(workspace=tmp_path, models=[])
 
     @patch("pydantic_ai.models.fallback.FallbackModel")
-    @patch("nanobot.agent.agent.Agent")
+    @patch("nanobot.agents.talker.Agent")
     def test_init_creates_pydantic_agent(
         self, mock_agent_cls: MagicMock, mock_fallback: MagicMock, tmp_path: Path
     ) -> None:
@@ -270,7 +271,7 @@ class TestNanobotAgent:
         assert agent.pydantic_agent is mock_agent_instance
 
     @patch("pydantic_ai.models.fallback.FallbackModel")
-    @patch("nanobot.agent.agent.Agent")
+    @patch("nanobot.agents.talker.Agent")
     def test_init_with_custom_system_prompt(
         self, mock_agent_cls: MagicMock, mock_fallback: MagicMock, tmp_path: Path
     ) -> None:
@@ -291,7 +292,7 @@ class TestNanobotAgent:
         )
 
     @patch("pydantic_ai.models.fallback.FallbackModel")
-    @patch("nanobot.agent.agent.Agent")
+    @patch("nanobot.agents.talker.Agent")
     def test_init_with_default_instructions(
         self, mock_agent_cls: MagicMock, mock_fallback: MagicMock, tmp_path: Path
     ) -> None:
@@ -309,7 +310,7 @@ class TestNanobotAgent:
         assert "nanobot" in instructions
 
     @patch("pydantic_ai.models.fallback.FallbackModel")
-    @patch("nanobot.agent.agent.Agent")
+    @patch("nanobot.agents.talker.Agent")
     def test_tool_adapter_lazy_init(
         self, mock_agent_cls: MagicMock, mock_fallback: MagicMock, tmp_path: Path
     ) -> None:
@@ -329,7 +330,7 @@ class TestNanobotAgent:
         assert agent.tool_adapter is adapter
 
     @patch("pydantic_ai.models.fallback.FallbackModel")
-    @patch("nanobot.agent.agent.Agent")
+    @patch("nanobot.agents.talker.Agent")
     def test_pydantic_agent_property(
         self, mock_agent_cls: MagicMock, mock_fallback: MagicMock, tmp_path: Path
     ) -> None:
@@ -374,7 +375,7 @@ class TestNanobotAgent:
         assert len(new_msgs) > 0
 
     @patch("pydantic_ai.models.fallback.FallbackModel")
-    @patch("nanobot.agent.agent.Agent")
+    @patch("nanobot.agents.talker.Agent")
     @pytest.mark.asyncio
     async def test_run_returns_empty_string_for_none_output(
         self, mock_agent_cls: MagicMock, mock_fallback: MagicMock, tmp_path: Path
@@ -418,7 +419,7 @@ class TestNanobotAgent:
         assert "success" in streamed
 
     @patch("pydantic_ai.models.fallback.FallbackModel")
-    @patch("nanobot.agent.agent.Agent")
+    @patch("nanobot.agents.talker.Agent")
     def test_init_with_hooks(
         self, mock_agent_cls: MagicMock, mock_fallback: MagicMock, tmp_path: Path
     ) -> None:
@@ -438,7 +439,7 @@ class TestNanobotAgent:
         assert mock_hooks in capabilities
 
     @patch("pydantic_ai.models.fallback.FallbackModel")
-    @patch("nanobot.agent.agent.Agent")
+    @patch("nanobot.agents.talker.Agent")
     def test_init_with_retries(
         self, mock_agent_cls: MagicMock, mock_fallback: MagicMock, tmp_path: Path
     ) -> None:

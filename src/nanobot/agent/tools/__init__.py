@@ -1,6 +1,3 @@
-"""Agent tools module."""
+"""Backward compat — use nanobot.tools directly."""
 
-from nanobot.agent.tools.base import Tool
-from nanobot.agent.tools.registry import ToolRegistry
-
-__all__ = ["Tool", "ToolRegistry"]
+from nanobot.tools import *  # noqa: F401,F403

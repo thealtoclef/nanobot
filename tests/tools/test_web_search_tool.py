@@ -3,12 +3,14 @@
 import httpx
 import pytest
 
-from nanobot.agent.tools.web import WebSearchTool
+from nanobot.tools.web import WebSearchTool
 from nanobot.config.schema import WebSearchConfig
 
 
 def _tool(provider: str = "brave", api_key: str = "", base_url: str = "") -> WebSearchTool:
-    return WebSearchTool(config=WebSearchConfig(provider=provider, api_key=api_key, base_url=base_url))
+    return WebSearchTool(
+        config=WebSearchConfig(provider=provider, api_key=api_key, base_url=base_url)
+    )
 
 
 def _response(status: int = 200, json: dict | None = None) -> httpx.Response:
@@ -23,9 +25,19 @@ async def test_brave_search(monkeypatch):
     async def mock_get(self, url, **kw):
         assert "brave" in url
         assert kw["headers"]["X-Subscription-Token"] == "brave-key"
-        return _response(json={
-            "web": {"results": [{"title": "NanoBot", "url": "https://example.com", "description": "AI assistant"}]}
-        })
+        return _response(
+            json={
+                "web": {
+                    "results": [
+                        {
+                            "title": "NanoBot",
+                            "url": "https://example.com",
+                            "description": "AI assistant",
+                        }
+                    ]
+                }
+            }
+        )
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
     tool = _tool(provider="brave", api_key="brave-key")
@@ -39,9 +51,13 @@ async def test_tavily_search(monkeypatch):
     async def mock_post(self, url, **kw):
         assert "tavily" in url
         assert kw["headers"]["Authorization"] == "Bearer tavily-key"
-        return _response(json={
-            "results": [{"title": "OpenClaw", "url": "https://openclaw.io", "content": "Framework"}]
-        })
+        return _response(
+            json={
+                "results": [
+                    {"title": "OpenClaw", "url": "https://openclaw.io", "content": "Framework"}
+                ]
+            }
+        )
 
     monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
     tool = _tool(provider="tavily", api_key="tavily-key")
@@ -54,9 +70,13 @@ async def test_tavily_search(monkeypatch):
 async def test_searxng_search(monkeypatch):
     async def mock_get(self, url, **kw):
         assert "searx.example" in url
-        return _response(json={
-            "results": [{"title": "Result", "url": "https://example.com", "content": "SearXNG result"}]
-        })
+        return _response(
+            json={
+                "results": [
+                    {"title": "Result", "url": "https://example.com", "content": "SearXNG result"}
+                ]
+            }
+        )
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
     tool = _tool(provider="searxng", base_url="https://searx.example")
@@ -71,13 +91,17 @@ async def test_duckduckgo_search(monkeypatch):
             pass
 
         def text(self, query, max_results=5):
-            return [{"title": "DDG Result", "href": "https://ddg.example", "body": "From DuckDuckGo"}]
+            return [
+                {"title": "DDG Result", "href": "https://ddg.example", "body": "From DuckDuckGo"}
+            ]
 
-    monkeypatch.setattr("nanobot.agent.tools.web.DDGS", MockDDGS, raising=False)
-    import nanobot.agent.tools.web as web_mod
+    monkeypatch.setattr("nanobot.tools.web.DDGS", MockDDGS, raising=False)
+    import nanobot.tools.web as web_mod
+
     monkeypatch.setattr(web_mod, "DDGS", MockDDGS, raising=False)
 
     from ddgs import DDGS
+
     monkeypatch.setattr("ddgs.DDGS", MockDDGS)
 
     tool = _tool(provider="duckduckgo")
@@ -92,7 +116,9 @@ async def test_brave_fallback_to_duckduckgo_when_no_key(monkeypatch):
             pass
 
         def text(self, query, max_results=5):
-            return [{"title": "Fallback", "href": "https://ddg.example", "body": "DuckDuckGo fallback"}]
+            return [
+                {"title": "Fallback", "href": "https://ddg.example", "body": "DuckDuckGo fallback"}
+            ]
 
     monkeypatch.setattr("ddgs.DDGS", MockDDGS)
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
@@ -107,9 +133,11 @@ async def test_jina_search(monkeypatch):
     async def mock_get(self, url, **kw):
         assert "s.jina.ai" in str(url)
         assert kw["headers"]["Authorization"] == "Bearer jina-key"
-        return _response(json={
-            "data": [{"title": "Jina Result", "url": "https://jina.ai", "content": "AI search"}]
-        })
+        return _response(
+            json={
+                "data": [{"title": "Jina Result", "url": "https://jina.ai", "content": "AI search"}]
+            }
+        )
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
     tool = _tool(provider="jina", api_key="jina-key")

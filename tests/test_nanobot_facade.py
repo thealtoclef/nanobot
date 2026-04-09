@@ -56,7 +56,7 @@ def test_from_config_default_path():
     )
     with (
         patch("nanobot.config.loader.load_config") as mock_load,
-        patch("nanobot.agent.agent.Agent") as mock_agent,
+        patch("nanobot.agents.talker.Agent") as mock_agent,
     ):
         mock_load.return_value = config
         mock_agent.return_value = MagicMock()

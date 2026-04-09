@@ -23,16 +23,16 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.test import TestModel
 
-from nanobot.agent.memory import (
+from nanobot.memory import (
     SummarizerDeps,
     SummarizerResult,
     ExtractorDeps,
     ExtractorResult,
     HistoryStore,
-    HistorySummarizer,
-    _summarizer_agent,
-    _extractor_agent,
 )
+from nanobot.memory.compressor import HistoryCompressor as HistorySummarizer
+from nanobot.agents.summarizer import _summarizer_agent
+from nanobot.agents.extractor import _extractor_agent
 from nanobot.db import Database, upgrade_db
 
 

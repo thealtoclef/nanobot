@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from nanobot.agent.tools.web import WebFetchTool
+from nanobot.tools.web import WebFetchTool
 
 
 def _fake_resolve_private(hostname, port, family=0, type_=0):
@@ -32,8 +32,10 @@ async def test_web_fetch_blocks_private_ip():
 @pytest.mark.asyncio
 async def test_web_fetch_blocks_localhost():
     tool = WebFetchTool()
+
     def _resolve_localhost(hostname, port, family=0, type_=0):
         return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 0))]
+
     with patch("nanobot.security.network.socket.getaddrinfo", _resolve_localhost):
         result = await tool.execute(url="http://localhost/admin")
     data = json.loads(result)
@@ -54,14 +56,20 @@ async def test_web_fetch_result_contains_untrusted_flag():
         url = "https://example.com/page"
         text = fake_html
         headers = {"content-type": "text/html"}
-        def raise_for_status(self): pass
-        def json(self): return {}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {}
 
     async def _fake_get(self, url, **kwargs):
         return FakeResponse()
 
-    with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public), \
-         patch("httpx.AsyncClient.get", _fake_get):
+    with (
+        patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public),
+        patch("httpx.AsyncClient.get", _fake_get),
+    ):
         result = await tool.execute(url="https://example.com/page")
 
     data = json.loads(result)
@@ -103,7 +111,7 @@ async def test_web_fetch_blocks_private_redirect_before_returning_image(monkeypa
         def stream(self, method, url, headers=None):
             return FakeStreamResponse()
 
-    monkeypatch.setattr("nanobot.agent.tools.web.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr("nanobot.tools.web.httpx.AsyncClient", FakeClient)
 
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public):
         result = await tool.execute(url="https://example.com/image.png")

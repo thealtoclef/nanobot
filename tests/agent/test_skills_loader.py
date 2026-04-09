@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.agent.skills import SkillsLoader
+from nanobot.skill_loader import SkillsLoader
 
 
 def _make_skill(directory: Path, name: str, content: str) -> Path:

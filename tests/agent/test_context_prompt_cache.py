@@ -17,7 +17,7 @@ from pydantic_ai.messages import (
     SystemPromptPart,
 )
 
-from nanobot.agent.context import ContextBuilder
+from nanobot.context import ContextBuilder
 from nanobot.db import Database
 
 

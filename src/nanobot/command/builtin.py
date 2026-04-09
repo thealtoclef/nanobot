@@ -56,7 +56,7 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
     ctx_est = 0
     try:
         session = ctx.session or loop.sessions.get_session(ctx.key)
-        ctx_est = loop.history_summarizer.estimate_session_prompt_tokens(session)
+        ctx_est = loop.history_compressor.estimate_session_prompt_tokens(session)
     except Exception:
         pass
     return OutboundMessage(

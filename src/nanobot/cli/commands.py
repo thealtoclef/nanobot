@@ -545,10 +545,10 @@ def serve(
         raise typer.Exit(1)
 
     from loguru import logger
-    from nanobot.agent.runner import AgentRunner
+    from nanobot.runner import AgentRunner
     from nanobot.api.server import create_app
     from nanobot.bus.queue import MessageBus
-    from nanobot.session.manager import SessionManager
+    from nanobot.session import SessionManager
 
     if verbose:
         logger.enable("nanobot")
@@ -620,13 +620,13 @@ def gateway(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Start the nanobot gateway."""
-    from nanobot.agent.runner import AgentRunner
+    from nanobot.runner import AgentRunner
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
-    from nanobot.session.manager import SessionManager
+    from nanobot.session import SessionManager
 
     if verbose:
         import logging
@@ -671,8 +671,8 @@ def gateway(
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
-        from nanobot.agent.tools.cron import CronTool
-        from nanobot.agent.tools.message import MessageTool
+        from nanobot.tools.cron import CronTool
+        from nanobot.tools.message import MessageTool
 
         reminder_note = (
             "[Scheduled Task] Timer finished.\n\n"
@@ -847,7 +847,7 @@ def agent(
     """Interact with the agent directly."""
     from loguru import logger
 
-    from nanobot.agent.runner import AgentRunner
+    from nanobot.runner import AgentRunner
     from nanobot.bus.queue import MessageBus
     from nanobot.cron.service import CronService
 
