@@ -77,7 +77,7 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
 
 
 async def cmd_compact(ctx: CommandContext) -> OutboundMessage:
-    """Compress conversation history into a summary and facts, then start fresh."""
+    """Compress conversation history into a summary and facts, then continue."""
     loop = ctx.loop
     loop.sessions.ensure_session(ctx.key)
     snapshot = loop.sessions.get_unconsolidated_messages(ctx.key)
@@ -87,7 +87,7 @@ async def cmd_compact(ctx: CommandContext) -> OutboundMessage:
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
-        content="New session started.",
+        content="Conversation compressed.",
         metadata=dict(ctx.msg.metadata or {}),
     )
 
@@ -106,7 +106,7 @@ def build_help_text() -> str:
     """Build canonical help text shared across channels."""
     lines = [
         "🐈 nanobot commands:",
-        "/compact — Compress history and start fresh",
+        "/compact — Summarize conversation history into facts",
         "/stop — Stop the current task",
         "/restart — Restart the bot",
         "/status — Show bot status",

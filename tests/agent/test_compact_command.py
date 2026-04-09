@@ -135,7 +135,7 @@ class TestCompactCommand:
         with _summarizer_agent.override(model=tm), _extractor_agent.override(model=tm):
             result = await cmd_compact(ctx)
 
-        assert result.content == "New session started."
+        assert result.content == "Conversation compressed."
 
         # Verify: messages are cleared
         remaining = runner.sessions.get_all_messages("test-session")
@@ -185,7 +185,7 @@ class TestCompactCommand:
         )
 
         result = await cmd_compact(ctx)
-        assert result.content == "New session started."
+        assert result.content == "Conversation compressed."
 
         # No history row should be created for empty session
         assert runner.sessions.get_current_history_row("empty-session") is None
