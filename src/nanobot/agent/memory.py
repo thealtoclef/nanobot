@@ -16,7 +16,7 @@ from nanobot.db import Database
 from nanobot.utils.helpers import estimate_message_tokens
 
 if TYPE_CHECKING:
-    from nanobot.agent.agent import NanobotAgent
+    from nanobot.agent.agent import Talker
     from nanobot.session.manager import SessionManager
 
 
@@ -212,7 +212,7 @@ class HistorySummarizer:
     def __init__(
         self,
         db: Database,
-        agent: NanobotAgent,
+        agent: Talker,
         sessions: SessionManager,
         context_window_tokens: int,
         max_completion_tokens: int = 4096,

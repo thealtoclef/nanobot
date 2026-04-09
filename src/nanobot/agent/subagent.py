@@ -69,9 +69,9 @@ class SubagentManager:
         - Restricted tool set: read_file, write_file, edit_file, list_dir, exec, web_search, web_fetch
         - NOT registered: spawn, message, cron
         """
-        from nanobot.agent.agent import NanobotAgent
+        from nanobot.agent.agent import Talker
 
-        subagent = NanobotAgent(
+        subagent = Talker(
             workspace=self.workspace,
             models=main_agent.models,
             max_tool_result_chars=self.max_tool_result_chars,

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.agent import NanobotAgent
+from nanobot.agent import Talker
 from nanobot.heartbeat.service import HeartbeatService
 
 # PydanticAI FunctionModel imports
@@ -24,16 +24,16 @@ from pydantic_ai.messages import ModelRequest, UserPromptPart
 # ---------------------------------------------------------------------------
 
 
-def create_agent(response: str, tmp_path: Path) -> NanobotAgent:
+def create_agent(response: str, tmp_path: Path) -> Talker:
     """Create a NanobotAgent that always returns the same JSON response."""
 
     def single_response(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         return ModelResponse(parts=[TextPart(content=response)])
 
-    return NanobotAgent(workspace=tmp_path, models=[FunctionModel(single_response)])
+    return Talker(workspace=tmp_path, models=[FunctionModel(single_response)])
 
 
-def create_multi_response_agent(responses: list[str], tmp_path: Path) -> NanobotAgent:
+def create_multi_response_agent(responses: list[str], tmp_path: Path) -> Talker:
     """Create a NanobotAgent that returns sequential responses from a list."""
     responses = list(responses)
     response_idx = [0]
@@ -44,7 +44,7 @@ def create_multi_response_agent(responses: list[str], tmp_path: Path) -> Nanobot
         content = responses[idx] if idx < len(responses) else responses[-1]
         return ModelResponse(parts=[TextPart(content=content)])
 
-    return NanobotAgent(workspace=tmp_path, models=[FunctionModel(multi_response)])
+    return Talker(workspace=tmp_path, models=[FunctionModel(multi_response)])
 
 
 def _extract_prompt_text(messages: list[ModelMessage]) -> str:
@@ -236,7 +236,7 @@ async def test_decide_prompt_includes_current_time(tmp_path) -> None:
         captured_prompts.append(_extract_prompt_text(messages))
         return ModelResponse(parts=[TextPart(content='{"action": "skip"}')])
 
-    agent = NanobotAgent(workspace=tmp_path, models=[FunctionModel(capture_prompt)])
+    agent = Talker(workspace=tmp_path, models=[FunctionModel(capture_prompt)])
 
     service = HeartbeatService(
         workspace=tmp_path,
@@ -335,7 +335,7 @@ async def test_evaluate_includes_task_context_in_prompt(tmp_path) -> None:
         captured_prompts.append(_extract_prompt_text(messages))
         return ModelResponse(parts=[TextPart(content='{"should_notify": false, "reason": "ok"}')])
 
-    agent = NanobotAgent(workspace=tmp_path, models=[FunctionModel(capture_prompt)])
+    agent = Talker(workspace=tmp_path, models=[FunctionModel(capture_prompt)])
 
     service = HeartbeatService(workspace=tmp_path, agent=agent)
 

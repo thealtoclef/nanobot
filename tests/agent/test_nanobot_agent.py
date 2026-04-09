@@ -22,7 +22,7 @@ from pydantic_ai.models.test import TestModel
 
 from nanobot.agent.agent import (
     BOOTSTRAP_FILES,
-    NanobotAgent,
+    Talker,
     ToolAdapter,
     build_instructions,
 )
@@ -68,7 +68,7 @@ def _make_nanobot_agent_with_testmodel(
     tmp_path: Path,
     *,
     custom_output: str | None = None,
-) -> tuple[NanobotAgent, TestModel]:
+) -> tuple[Talker, TestModel]:
     """Create a NanobotAgent whose internal pydantic Agent uses TestModel.
 
     Patches FallbackModel and Agent just enough for construction, then
@@ -82,7 +82,7 @@ def _make_nanobot_agent_with_testmodel(
         patch("nanobot.agent.agent.Agent", return_value=real_agent),
     ):
         mock_fb.return_value = MagicMock()
-        agent = NanobotAgent(
+        agent = Talker(
             workspace=tmp_path,
             models=[_make_model()],
         )
@@ -247,7 +247,7 @@ class TestNanobotAgent:
     def test_init_with_no_models_raises(self, tmp_path: Path) -> None:
         """Initializing with empty models list raises ValueError."""
         with pytest.raises(ValueError, match="No models configured"):
-            NanobotAgent(workspace=tmp_path, models=[])
+            Talker(workspace=tmp_path, models=[])
 
     @patch("pydantic_ai.models.fallback.FallbackModel")
     @patch("nanobot.agent.agent.Agent")
@@ -260,7 +260,7 @@ class TestNanobotAgent:
         mock_agent_instance = MagicMock()
         mock_agent_cls.return_value = mock_agent_instance
 
-        agent = NanobotAgent(
+        agent = Talker(
             workspace=tmp_path,
             models=[mock_model],
         )
@@ -278,7 +278,7 @@ class TestNanobotAgent:
         mock_fallback.return_value = MagicMock()
         mock_agent_cls.return_value = MagicMock()
 
-        agent = NanobotAgent(
+        agent = Talker(
             workspace=tmp_path,
             models=[_make_model()],
             system_prompt="Custom prompt",
@@ -299,7 +299,7 @@ class TestNanobotAgent:
         mock_fallback.return_value = MagicMock()
         mock_agent_cls.return_value = MagicMock()
 
-        agent = NanobotAgent(
+        agent = Talker(
             workspace=tmp_path,
             models=[_make_model()],
         )
@@ -318,7 +318,7 @@ class TestNanobotAgent:
         mock_agent_instance = MagicMock()
         mock_agent_cls.return_value = mock_agent_instance
 
-        agent = NanobotAgent(
+        agent = Talker(
             workspace=tmp_path,
             models=[_make_model()],
         )
@@ -338,7 +338,7 @@ class TestNanobotAgent:
         mock_agent_instance = MagicMock()
         mock_agent_cls.return_value = mock_agent_instance
 
-        agent = NanobotAgent(
+        agent = Talker(
             workspace=tmp_path,
             models=[_make_model()],
         )
@@ -386,7 +386,7 @@ class TestNanobotAgent:
         mock_pydantic_agent.run = AsyncMock(return_value=mock_result)
         mock_agent_cls.return_value = mock_pydantic_agent
 
-        agent = NanobotAgent(
+        agent = Talker(
             workspace=tmp_path,
             models=[_make_model()],
         )
@@ -427,7 +427,7 @@ class TestNanobotAgent:
         mock_agent_cls.return_value = MagicMock()
         mock_hooks = MagicMock()
 
-        agent = NanobotAgent(
+        agent = Talker(
             workspace=tmp_path,
             models=[_make_model()],
             hooks=mock_hooks,
@@ -446,7 +446,7 @@ class TestNanobotAgent:
         mock_fallback.return_value = MagicMock()
         mock_agent_cls.return_value = MagicMock()
 
-        agent = NanobotAgent(
+        agent = Talker(
             workspace=tmp_path,
             models=[_make_model()],
             retries=3,

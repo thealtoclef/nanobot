@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.agent import NanobotAgent
+from nanobot.agent.agent import Talker
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import HistorySummarizer
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
@@ -117,7 +117,7 @@ class AgentRunner:
         self.context = ContextBuilder(workspace, db=self.db, timezone=timezone)
 
         # NanobotAgent (pydanticAI-based)
-        self.agent = NanobotAgent(
+        self.agent = Talker(
             workspace=workspace,
             models=models,
             max_iterations=max_iterations,

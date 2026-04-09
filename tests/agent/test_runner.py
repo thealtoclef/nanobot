@@ -27,9 +27,9 @@ from pydantic_ai.messages import ModelMessage
 def _make_runner(tmp_path: Path, sessions: SessionManager) -> AgentRunner:
     """Create a minimal AgentRunner for testing session helpers."""
     bus = MessageBus()
-    from nanobot.agent.agent import NanobotAgent
+    from nanobot.agent.agent import Talker
 
-    agent = MagicMock(spec=NanobotAgent)
+    agent = MagicMock(spec=Talker)
     runner = AgentRunner.__new__(AgentRunner)
     runner.workspace = tmp_path
     runner.bus = bus
@@ -191,10 +191,10 @@ class TestRunAgentLoopNoDuplication:
     """Verify _run_agent_loop receives user_content separately from message_history."""
 
     def _make_runner_with_mock_agent(self, tmp_path: Path) -> tuple[AgentRunner, MagicMock]:
-        from nanobot.agent.agent import NanobotAgent
+        from nanobot.agent.agent import Talker
 
         bus = MessageBus()
-        agent = MagicMock(spec=NanobotAgent)
+        agent = MagicMock(spec=Talker)
         sessions = MagicMock()
         runner = AgentRunner.__new__(AgentRunner)
         runner.workspace = tmp_path

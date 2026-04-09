@@ -126,7 +126,7 @@ class ToolAdapter:
 # ---------------------------------------------------------------------------
 
 
-class NanobotAgent:
+class Talker:
     """PydanticAI-based agent for nanobot.
 
     This is the primary agent implementation. It wraps pydanticAI's Agent

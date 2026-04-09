@@ -1,6 +1,6 @@
 """Agent core module."""
 
-from nanobot.agent.agent import NanobotAgent
+from nanobot.agent.agent import Talker
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.runner import AgentRunner
