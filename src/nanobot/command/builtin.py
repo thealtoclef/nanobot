@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 
 from nanobot import __version__
 from nanobot.bus.events import OutboundMessage
@@ -64,9 +65,9 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
         chat_id=ctx.msg.chat_id,
         content=build_status_content(
             version=__version__,
-            model=loop.model,
-            start_time=loop._start_time,
-            last_usage=loop._last_usage,
+            model=str(loop.models[0]) if loop.models else "unknown",
+            start_time=getattr(loop, "_start_time", time.time()),
+            last_usage=getattr(loop, "_last_usage", {}),
             context_window_tokens=loop.context_window_tokens,
             session_msg_count=len(loop.sessions.get_all_messages(ctx.key)),
             context_tokens_estimate=ctx_est,
@@ -81,7 +82,7 @@ async def cmd_new(ctx: CommandContext) -> OutboundMessage:
     loop.sessions.ensure_session(ctx.key)
     snapshot = loop.sessions.get_unconsolidated_messages(ctx.key)
     if snapshot:
-        await loop.history_summarizer.summarize_and_extract(snapshot)
+        await loop.history_compressor.summarize_and_extract(snapshot)
     loop.sessions.clear_session_for_new(ctx.key)
     return OutboundMessage(
         channel=ctx.msg.channel,

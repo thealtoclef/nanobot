@@ -1218,11 +1218,10 @@ def status():
         console.print(f"Model: {config.agent.models[0].name if config.agent.models else 'not set'}")
 
         # Check API keys from providers
-        for provider_name in dir(config.providers):
+        for provider_name, p in vars(config.providers).items():
             if provider_name.startswith("_"):
                 continue
-            p = getattr(config.providers, provider_name, None)
-            if p is None:
+            if not hasattr(p, "get_api_key"):
                 continue
             has_key = bool(p.get_api_key())
             console.print(
