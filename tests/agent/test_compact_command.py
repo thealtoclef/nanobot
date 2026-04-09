@@ -137,9 +137,9 @@ class TestCompactCommand:
 
         assert result.content == "Conversation compressed."
 
-        # Verify: messages are cleared
+        # Verify: messages are NOT deleted (compaction just sets the boundary)
         remaining = runner.sessions.get_all_messages("test-session")
-        assert len(remaining) == 0
+        assert len(remaining) == 2  # original messages still exist
 
         # Verify: history row created with summary
         # Note: current_history_id is cleared by clear_session_for_new, so use get_all_histories
