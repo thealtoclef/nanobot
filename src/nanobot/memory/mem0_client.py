@@ -32,41 +32,35 @@ class Mem0Client:
 
     def _build_llm_config(self) -> dict[str, Any]:
         llm = self._config.llm
-        provider = llm.provider
-        result: dict[str, Any] = {"provider": provider}
+        backend = llm.backend
+        result: dict[str, Any] = {"provider": backend}
 
-        if provider == "ollama":
-            result["config"] = {
-                "model": llm.model or "llama3.1",
-                "ollama_base_url": llm.ollama_base_url or "http://localhost:11434",
-            }
-        elif provider in ("openai", "anthropic"):
-            api_key = self._resolve_api_key(llm.api_key, llm.api_key_env)
-            result["config"] = {"model": llm.model or "gpt-4o-mini"}
-            if api_key:
-                result["config"]["api_key"] = api_key
-            if llm.base_url:
-                result["config"]["openai_base_url"] = llm.base_url
+        api_key = self._resolve_api_key(llm.api_key, llm.api_key_env)
+        result["config"] = {"model": llm.model or "gpt-4o-mini"}
+        if api_key:
+            result["config"]["api_key"] = api_key
+
+        if backend == "ollama":
+            result["config"]["ollama_base_url"] = llm.base_url
+        else:
+            result["config"]["openai_base_url"] = llm.base_url
 
         return result
 
     def _build_embedder_config(self) -> dict[str, Any]:
         emb = self._config.embedder
-        provider = emb.provider
-        result: dict[str, Any] = {"provider": provider}
+        backend = emb.backend
+        result: dict[str, Any] = {"provider": backend}
 
-        if provider == "ollama":
-            result["config"] = {
-                "model": emb.model or "nomic-embed-text",
-                "ollama_base_url": emb.ollama_base_url or "http://localhost:11434",
-            }
-        elif provider == "openai":
-            api_key = self._resolve_api_key(emb.api_key, emb.api_key_env)
-            result["config"] = {"model": emb.model or "text-embedding-3-small"}
-            if api_key:
-                result["config"]["api_key"] = api_key
-            if emb.base_url:
-                result["config"]["openai_base_url"] = emb.base_url
+        api_key = self._resolve_api_key(emb.api_key, emb.api_key_env)
+        result["config"] = {"model": emb.model or "text-embedding-3-small"}
+        if api_key:
+            result["config"]["api_key"] = api_key
+
+        if backend == "ollama":
+            result["config"]["ollama_base_url"] = emb.base_url
+        else:
+            result["config"]["openai_base_url"] = emb.base_url
 
         return result
 

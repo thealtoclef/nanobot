@@ -60,17 +60,20 @@ class TestMem0ClientConfig:
         assert mem0_config["vector_store"]["provider"] == "chroma"
         assert mem0_config["llm"]["provider"] == "openai"
         assert mem0_config["embedder"]["provider"] == "openai"
+        # base_url is required, so defaults are empty strings
+        assert mem0_config["llm"]["config"]["openai_base_url"] == ""
+        assert mem0_config["embedder"]["config"]["openai_base_url"] == ""
 
     def test_ollama_config(self, tmp_path: Path):
         config = MemoryConfig(
             enabled=True,
             llm=MemoryLLMConfig(
-                provider="ollama", model="llama3.1", ollama_base_url="http://localhost:11434"
+                backend="ollama", model="llama3.1", base_url="http://localhost:11434"
             ),
             embedder=MemoryEmbedderConfig(
-                provider="ollama",
+                backend="ollama",
                 model="nomic-embed-text",
-                ollama_base_url="http://localhost:11434",
+                base_url="http://localhost:11434",
             ),
         )
         client = Mem0Client(config, tmp_path)
@@ -81,11 +84,17 @@ class TestMem0ClientConfig:
         assert mem0_config["llm"]["config"]["ollama_base_url"] == "http://localhost:11434"
         assert mem0_config["embedder"]["provider"] == "ollama"
         assert mem0_config["embedder"]["config"]["model"] == "nomic-embed-text"
+        assert mem0_config["embedder"]["config"]["ollama_base_url"] == "http://localhost:11434"
 
     def test_openai_config_with_api_key_env(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("MY_API_KEY", "sk-test-key")
         config = MemoryConfig(
-            llm=MemoryLLMConfig(provider="openai", api_key_env="MY_API_KEY", model="gpt-4o"),
+            llm=MemoryLLMConfig(
+                backend="openai",
+                api_key_env="MY_API_KEY",
+                model="gpt-4o",
+                base_url="https://api.openai.com/v1",
+            ),
         )
         client = Mem0Client(config, tmp_path)
         mem0_config = client._build_llm_config()

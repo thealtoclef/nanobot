@@ -200,25 +200,47 @@ class ToolsConfig(Base):
 
 
 class MemoryLLMConfig(Base):
-    """LLM config for mem0's own extraction/update operations."""
+    """LLM config for mem0's own extraction/update operations.
 
-    provider: Literal["openai", "anthropic", "ollama"] = "openai"
+    Use backend='openai' for OpenAI-compatible providers (deepseek, groq, etc.)
+    by setting base_url to the provider's API endpoint.
+    api_key and api_key_env are mutually exclusive — set one or the other, not both.
+    """
+
+    backend: Literal["openai", "anthropic", "ollama"] = "openai"
     model: str = "gpt-4o-mini"
     api_key: str = ""
     api_key_env: str = ""
     base_url: str = ""
-    ollama_base_url: str = ""
+
+    @model_validator(mode="after")
+    def check_api_key_mutual_exclusion(self) -> "MemoryLLMConfig":
+        if self.api_key and self.api_key_env:
+            raise ValueError(
+                "api_key and api_key_env are mutually exclusive. Set one or the other, not both."
+            )
+        return self
 
 
 class MemoryEmbedderConfig(Base):
-    """Embedder config for mem0."""
+    """Embedder config for mem0.
 
-    provider: Literal["openai", "ollama"] = "openai"
+    api_key and api_key_env are mutually exclusive — set one or the other, not both.
+    """
+
+    backend: Literal["openai", "ollama"] = "openai"
     model: str = "text-embedding-3-small"
     api_key: str = ""
     api_key_env: str = ""
     base_url: str = ""
-    ollama_base_url: str = ""
+
+    @model_validator(mode="after")
+    def check_api_key_mutual_exclusion(self) -> "MemoryEmbedderConfig":
+        if self.api_key and self.api_key_env:
+            raise ValueError(
+                "api_key and api_key_env are mutually exclusive. Set one or the other, not both."
+            )
+        return self
 
 
 class MemoryRerankerConfig(Base):
