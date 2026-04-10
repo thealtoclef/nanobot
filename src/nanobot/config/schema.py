@@ -198,13 +198,55 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+def _camel_to_snake_key(key: str) -> str:
+    """Convert camelCase key to snake_case."""
+    result = []
+    for i, c in enumerate(key):
+        if c.isupper() and i > 0:
+            result.append("_")
+        result.append(c.lower())
+    return "".join(result)
+
+
+def _convert_keys_recursive(data: Any) -> Any:
+    """Recursively convert all camelCase keys to snake_case in a dict."""
+    if isinstance(data, dict):
+        return {
+            (k if not _is_camel(k) else _camel_to_snake_key(k)): _convert_keys_recursive(v)
+            for k, v in data.items()
+        }
+    elif isinstance(data, list):
+        return [_convert_keys_recursive(item) for item in data]
+    return data
+
+
+def _is_camel(key: str) -> bool:
+    """Check if a key looks like camelCase (has uppercase letter not at start)."""
+    return any(c.isupper() for c in key[1:])
+
+
 class MemoryConfig(Base):
-    """mem0 memory layer configuration. Pass-through to mem0."""
+    """mem0 memory layer configuration. Pass-through to mem0.
+
+    All dict fields have their keys converted from camelCase to snake_case
+    to match mem0's expected snake_case format.
+    """
 
     enabled: bool = False
     llm: dict[str, Any] = Field(default_factory=dict)
     embedder: dict[str, Any] = Field(default_factory=dict)
     reranker: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _convert_dict_keys(cls, data: Any) -> Any:
+        """Convert camelCase keys to snake_case in llm/embedder/reranker dicts."""
+        if isinstance(data, dict):
+            result = dict(data)
+            for field in ("llm", "embedder", "reranker"):
+                if field in result and isinstance(result[field], dict):
+                    result[field] = _convert_keys_recursive(result[field])
+        return result
 
 
 class Config(BaseSettings):
