@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
@@ -199,83 +199,13 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
-class MemoryLLMConfig(Base):
-    """LLM config for mem0's own extraction/update operations.
-
-    Use backend='openai' for OpenAI-compatible providers (deepseek, groq, etc.)
-    by setting base_url to the provider's API endpoint.
-    api_key and api_key_env are mutually exclusive — set one or the other, not both.
-    """
-
-    backend: Literal["openai", "anthropic", "ollama"] = "openai"
-    model: str = "gpt-4o-mini"
-    api_key: str = ""
-    api_key_env: str = ""
-    base_url: str = ""
-
-    @model_validator(mode="after")
-    def check_api_key_mutual_exclusion(self) -> "MemoryLLMConfig":
-        if self.api_key and self.api_key_env:
-            raise ValueError(
-                "api_key and api_key_env are mutually exclusive. Set one or the other, not both."
-            )
-        return self
-
-
-class MemoryEmbedderConfig(Base):
-    """Embedder config for mem0.
-
-    api_key and api_key_env are mutually exclusive — set one or the other, not both.
-    """
-
-    backend: Literal["openai", "ollama"] = "openai"
-    model: str = "text-embedding-3-small"
-    api_key: str = ""
-    api_key_env: str = ""
-    base_url: str = ""
-
-    @model_validator(mode="after")
-    def check_api_key_mutual_exclusion(self) -> "MemoryEmbedderConfig":
-        if self.api_key and self.api_key_env:
-            raise ValueError(
-                "api_key and api_key_env are mutually exclusive. Set one or the other, not both."
-            )
-        return self
-
-
-class MemoryRerankerConfig(Base):
-    """Optional reranker config for mem0 search results.
-
-    type: reranker implementation — 'cohere', 'sentence_transformer',
-    'huggingface', or 'llm_reranker' (uses nested llm for the underlying LLM).
-    api_key and api_key_env are mutually exclusive — set one or the other, not both.
-    """
-
-    type: str = "cohere"
-    model: str = ""
-    api_key: str = ""
-    api_key_env: str = ""
-    top_k: int | None = None
-    temperature: float | None = None
-    llm: MemoryLLMConfig | None = None  # for llm_reranker type only
-
-    @model_validator(mode="after")
-    def check_api_key_mutual_exclusion(self) -> "MemoryRerankerConfig":
-        if self.api_key and self.api_key_env:
-            raise ValueError(
-                "api_key and api_key_env are mutually exclusive. Set one or the other, not both."
-            )
-        return self
-
-
 class MemoryConfig(Base):
-    """mem0 memory layer configuration."""
+    """mem0 memory layer configuration. Pass-through to mem0."""
 
     enabled: bool = False
-    llm: MemoryLLMConfig = Field(default_factory=MemoryLLMConfig)
-    embedder: MemoryEmbedderConfig = Field(default_factory=MemoryEmbedderConfig)
-    reranker_enabled: bool = False
-    reranker: MemoryRerankerConfig = Field(default_factory=MemoryRerankerConfig)
+    llm: dict[str, Any] = Field(default_factory=dict)
+    embedder: dict[str, Any] = Field(default_factory=dict)
+    reranker: dict[str, Any] = Field(default_factory=dict)
 
 
 class Config(BaseSettings):

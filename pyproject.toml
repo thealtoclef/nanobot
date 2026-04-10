@@ -44,15 +44,16 @@ dependencies = [
     "alembic>=1.15.0,<2.0.0",
     "jinja2>=3.1.0,<4.0.0",
     "pendulum>=2.1.0,<4.0.0",
+    "mem0ai>=1.0.0,<2.0.0",
+    "chromadb>=0.4.0,<1.0.0",
 ]
 
 [project.optional-dependencies]
 api = ["aiohttp>=3.9.0,<4.0.0"]
 discord = ["discord.py>=2.5.2,<3.0.0"]
 langfuse = ["langfuse>=3.0.0,<4.0.0"]
-memory = ["mem0ai>=1.0.0,<2.0.0", "chromadb>=0.4.0,<1.0.0"]
 
-all = ["nanobot[api,discord,langfuse,memory]"]
+all = ["nanobot[api,discord,langfuse]"]
 
 [project.scripts]
 nanobot = "nanobot.cli.commands:app"

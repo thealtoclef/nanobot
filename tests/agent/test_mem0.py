@@ -3,16 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
-from nanobot.config.schema import (
-    MemoryConfig,
-    MemoryLLMConfig,
-    MemoryEmbedderConfig,
-    MemoryRerankerConfig,
-)
+from nanobot.config.schema import MemoryConfig
 from nanobot.context import ContextBuilder
 from nanobot.db import Database, upgrade_db
 from nanobot.memory.mem0_client import Mem0Client
@@ -58,143 +52,55 @@ class TestMem0ClientConfig:
 
         assert mem0_config["version"] == "v1.1"
         assert mem0_config["vector_store"]["provider"] == "chroma"
-        assert mem0_config["llm"]["provider"] == "openai"
-        assert mem0_config["embedder"]["provider"] == "openai"
-        # base_url is required, so defaults are empty strings
-        assert mem0_config["llm"]["config"]["openai_base_url"] == ""
-        assert mem0_config["embedder"]["config"]["openai_base_url"] == ""
-
-    def test_ollama_config(self, tmp_path: Path):
-        config = MemoryConfig(
-            enabled=True,
-            llm=MemoryLLMConfig(
-                backend="ollama", model="llama3.1", base_url="http://localhost:11434"
-            ),
-            embedder=MemoryEmbedderConfig(
-                backend="ollama",
-                model="nomic-embed-text",
-                base_url="http://localhost:11434",
-            ),
-        )
-        client = Mem0Client(config, tmp_path)
-        mem0_config = client._build_mem0_config()
-
-        assert mem0_config["llm"]["provider"] == "ollama"
-        assert mem0_config["llm"]["config"]["model"] == "llama3.1"
-        assert mem0_config["llm"]["config"]["ollama_base_url"] == "http://localhost:11434"
-        assert mem0_config["embedder"]["provider"] == "ollama"
-        assert mem0_config["embedder"]["config"]["model"] == "nomic-embed-text"
-        assert mem0_config["embedder"]["config"]["ollama_base_url"] == "http://localhost:11434"
-
-    def test_openai_config_with_api_key_env(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MY_API_KEY", "sk-test-key")
-        config = MemoryConfig(
-            llm=MemoryLLMConfig(
-                backend="openai",
-                api_key_env="MY_API_KEY",
-                model="gpt-4o",
-                base_url="https://api.openai.com/v1",
-            ),
-        )
-        client = Mem0Client(config, tmp_path)
-        mem0_config = client._build_llm_config()
-
-        assert mem0_config["config"]["api_key"] == "sk-test-key"
-        assert mem0_config["config"]["model"] == "gpt-4o"
-
-    def test_vector_store_hardcoded_in_config(self, tmp_path: Path):
-        """Vector store path is always workspace-relative, not configurable."""
-        config = MemoryConfig()
-        client = Mem0Client(config, tmp_path)
-        mem0_config = client._build_mem0_config()
         assert mem0_config["vector_store"]["config"]["path"] == str(tmp_path / "mem0_chroma")
-        assert mem0_config["vector_store"]["provider"] == "chroma"
         assert mem0_config["vector_store"]["config"]["collection_name"] == "nanobot_memory"
-
-    def test_history_db_path_hardcoded_in_config(self, tmp_path: Path):
-        """history_db_path is always workspace-relative, not configurable."""
-        config = MemoryConfig()
-        client = Mem0Client(config, tmp_path)
-        mem0_config = client._build_mem0_config()
         assert mem0_config["history_db_path"] == str(tmp_path / "memories.db")
-
-    def test_reranker_not_included_when_none(self, tmp_path: Path):
-        """Reranker is absent from config when not set."""
-        config = MemoryConfig()
-        client = Mem0Client(config, tmp_path)
-        mem0_config = client._build_mem0_config()
+        assert mem0_config["llm"] == {}
+        assert mem0_config["embedder"] == {}
         assert "reranker" not in mem0_config
 
-    def test_reranker_config_full(self, tmp_path: Path, monkeypatch):
-        """Reranker is included in config when reranker_enabled=True."""
-        monkeypatch.setenv("COHERE_KEY", "test-cohere-key")
+    def test_llm_passthrough(self, tmp_path: Path):
         config = MemoryConfig(
-            reranker_enabled=True,
-            reranker=MemoryRerankerConfig(
-                type="cohere",
-                model="rerank-english-v3.0",
-                api_key_env="COHERE_KEY",
-                top_k=5,
-                temperature=0.0,
-            ),
+            llm={"provider": "openai", "config": {"model": "gpt-4o", "api_key": "sk-test"}}
         )
         client = Mem0Client(config, tmp_path)
         mem0_config = client._build_mem0_config()
-        assert "reranker" in mem0_config
-        assert mem0_config["reranker"]["provider"] == "cohere"
-        assert mem0_config["reranker"]["model"] == "rerank-english-v3.0"
-        assert mem0_config["reranker"]["api_key"] == "test-cohere-key"
-        assert mem0_config["reranker"]["top_k"] == 5
-        assert mem0_config["reranker"]["temperature"] == 0.0
 
-    def test_reranker_llm_reranker_with_nested_llm(self, tmp_path: Path):
-        """llm_reranker type includes nested llm config built from MemoryLLMConfig."""
+        assert mem0_config["llm"]["provider"] == "openai"
+        assert mem0_config["llm"]["config"]["model"] == "gpt-4o"
+        assert mem0_config["llm"]["config"]["api_key"] == "sk-test"
+
+    def test_embedder_passthrough(self, tmp_path: Path):
         config = MemoryConfig(
-            reranker_enabled=True,
-            reranker=MemoryRerankerConfig(
-                type="llm_reranker",
-                model="llama3.1",
-                llm=MemoryLLMConfig(
-                    backend="ollama",
-                    model="llama3.1",
-                    base_url="http://localhost:11434",
-                ),
-            ),
+            embedder={
+                "provider": "openai",
+                "config": {"model": "text-embedding-3-small"},
+            }
         )
         client = Mem0Client(config, tmp_path)
-        reranker_cfg = client._build_reranker_config()
-        assert reranker_cfg is not None
-        assert reranker_cfg["provider"] == "llm_reranker"
-        assert reranker_cfg["model"] == "llama3.1"
-        assert "llm" in reranker_cfg
-        assert reranker_cfg["llm"]["provider"] == "ollama"
-        assert reranker_cfg["llm"]["config"]["ollama_base_url"] == "http://localhost:11434"
+        mem0_config = client._build_mem0_config()
 
+        assert mem0_config["embedder"]["provider"] == "openai"
+        assert mem0_config["embedder"]["config"]["model"] == "text-embedding-3-small"
 
-# ---------------------------------------------------------------------------
-# TestMem0ClientInitialization
-# ---------------------------------------------------------------------------
-
-
-class TestMem0ClientInitialization:
-    def test_initialize_raises_when_mem0_not_installed(self, tmp_path: Path, monkeypatch):
-        # Patch AsyncMemory to None to simulate not-installed
-        import nanobot.memory.mem0_client as mc
-
-        monkeypatch.setattr(mc, "AsyncMemory", None)
-
-        from nanobot.memory.mem0_client import Mem0Client
-        from nanobot.config.schema import MemoryConfig
-
-        config = MemoryConfig(enabled=True)
+    def test_reranker_included_when_non_empty(self, tmp_path: Path):
+        config = MemoryConfig(
+            reranker={"provider": "llm_reranker", "config": {"model": "gpt-4o-mini", "top_k": 5}}
+        )
         client = Mem0Client(config, tmp_path)
+        mem0_config = client._build_mem0_config()
 
-        import pytest
+        assert "reranker" in mem0_config
+        assert mem0_config["reranker"]["provider"] == "llm_reranker"
+        assert mem0_config["reranker"]["config"]["model"] == "gpt-4o-mini"
+        assert mem0_config["reranker"]["config"]["top_k"] == 5
 
-        with pytest.raises(RuntimeError, match="mem0ai package is not installed"):
-            import asyncio
+    def test_reranker_excluded_when_empty(self, tmp_path: Path):
+        config = MemoryConfig(reranker={})
+        client = Mem0Client(config, tmp_path)
+        mem0_config = client._build_mem0_config()
 
-            asyncio.run(client.initialize())
+        assert "reranker" not in mem0_config
 
 
 # ---------------------------------------------------------------------------
@@ -319,12 +225,6 @@ class TestMemoryDisabledPath:
 
         # AgentRunner class exists and is callable
         assert AgentRunner is not None
-
-    def test_mem0_client_imports_without_mem0(self):
-        """Mem0Client should be importable even when mem0 package is absent."""
-        from nanobot.memory.mem0_client import Mem0Client
-
-        assert Mem0Client is not None
 
     def test_memory_config_defaults_disabled(self):
         """MemoryConfig should default to enabled=False."""
