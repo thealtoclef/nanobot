@@ -23,18 +23,6 @@ class Mem0Client:
         self._workspace = workspace
         self._client: AsyncMemory | None = None
 
-    def _build_vector_store_path(self) -> Path:
-        path = self._config.vector_store_path.strip()
-        if path:
-            return Path(path)
-        return self._workspace / "mem0_chroma"
-
-    def _build_history_db_path(self) -> Path:
-        path = self._config.history_db_path.strip()
-        if path:
-            return Path(path)
-        return self._workspace / "memories.db"
-
     def _resolve_api_key(self, api_key: str, api_key_env: str) -> str:
         if api_key:
             return api_key
@@ -82,8 +70,28 @@ class Mem0Client:
 
         return result
 
+    def _build_reranker_config(self) -> dict[str, Any] | None:
+        """Build reranker config if set in MemoryConfig."""
+        reranker = self._config.reranker
+        if reranker is None:
+            return None
+
+        api_key = self._resolve_api_key(reranker.api_key, reranker.api_key_env)
+        config: dict[str, Any] = {
+            "provider": reranker.provider,
+            "model": reranker.model,
+        }
+        if api_key:
+            config["api_key"] = api_key
+        if reranker.top_k is not None:
+            config["top_k"] = reranker.top_k
+        if reranker.temperature is not None:
+            config["temperature"] = reranker.temperature
+
+        return config
+
     def _build_mem0_config(self) -> dict[str, Any]:
-        return {
+        config: dict[str, Any] = {
             "version": "v1.1",
             "llm": self._build_llm_config(),
             "embedder": self._build_embedder_config(),
@@ -91,11 +99,17 @@ class Mem0Client:
                 "provider": "chroma",
                 "config": {
                     "collection_name": "nanobot_memory",
-                    "path": str(self._build_vector_store_path()),
+                    "path": str(self._workspace / "mem0_chroma"),
                 },
             },
-            "history_db_path": str(self._build_history_db_path()),
+            "history_db_path": str(self._workspace / "memories.db"),
         }
+
+        reranker = self._build_reranker_config()
+        if reranker:
+            config["reranker"] = reranker
+
+        return config
 
     async def initialize(self) -> None:
         """Initialize AsyncMemory from config. Must be called before use."""

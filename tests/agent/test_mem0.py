@@ -7,7 +7,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nanobot.config.schema import MemoryConfig, MemoryLLMConfig, MemoryEmbedderConfig
+from nanobot.config.schema import (
+    MemoryConfig,
+    MemoryLLMConfig,
+    MemoryEmbedderConfig,
+    MemoryRerankerConfig,
+)
 from nanobot.context import ContextBuilder
 from nanobot.db import Database, upgrade_db
 from nanobot.memory.mem0_client import Mem0Client
@@ -88,29 +93,63 @@ class TestMem0ClientConfig:
         assert mem0_config["config"]["api_key"] == "sk-test-key"
         assert mem0_config["config"]["model"] == "gpt-4o"
 
-    def test_vector_store_path_default(self, tmp_path: Path):
+    def test_vector_store_hardcoded_in_config(self, tmp_path: Path):
+        """Vector store path is always workspace-relative, not configurable."""
         config = MemoryConfig()
         client = Mem0Client(config, tmp_path)
-        path = client._build_vector_store_path()
-        assert path == tmp_path / "mem0_chroma"
+        mem0_config = client._build_mem0_config()
+        assert mem0_config["vector_store"]["config"]["path"] == str(tmp_path / "mem0_chroma")
+        assert mem0_config["vector_store"]["provider"] == "chroma"
+        assert mem0_config["vector_store"]["config"]["collection_name"] == "nanobot_memory"
 
-    def test_vector_store_path_custom(self, tmp_path: Path):
-        config = MemoryConfig(vector_store_path="/custom/path")
-        client = Mem0Client(config, tmp_path)
-        path = client._build_vector_store_path()
-        assert path == Path("/custom/path")
-
-    def test_history_db_path_default(self, tmp_path: Path):
+    def test_history_db_path_hardcoded_in_config(self, tmp_path: Path):
+        """history_db_path is always workspace-relative, not configurable."""
         config = MemoryConfig()
         client = Mem0Client(config, tmp_path)
-        path = client._build_history_db_path()
-        assert path == tmp_path / "memories.db"
+        mem0_config = client._build_mem0_config()
+        assert mem0_config["history_db_path"] == str(tmp_path / "memories.db")
 
-    def test_history_db_path_custom(self, tmp_path: Path):
-        config = MemoryConfig(history_db_path="/custom/memories.db")
+    def test_reranker_not_included_when_none(self, tmp_path: Path):
+        """Reranker is absent from config when not set."""
+        config = MemoryConfig()
         client = Mem0Client(config, tmp_path)
-        path = client._build_history_db_path()
-        assert path == Path("/custom/memories.db")
+        mem0_config = client._build_mem0_config()
+        assert "reranker" not in mem0_config
+
+    def test_reranker_config_full(self, tmp_path: Path, monkeypatch):
+        """Reranker is included in config when set."""
+        monkeypatch.setenv("COHERE_KEY", "test-cohere-key")
+        config = MemoryConfig(
+            reranker=MemoryRerankerConfig(
+                provider="cohere",
+                model="rerank-english-v3.0",
+                api_key_env="COHERE_KEY",
+                top_k=5,
+                temperature=0.0,
+            )
+        )
+        client = Mem0Client(config, tmp_path)
+        mem0_config = client._build_mem0_config()
+        assert "reranker" in mem0_config
+        assert mem0_config["reranker"]["provider"] == "cohere"
+        assert mem0_config["reranker"]["model"] == "rerank-english-v3.0"
+        assert mem0_config["reranker"]["api_key"] == "test-cohere-key"
+        assert mem0_config["reranker"]["top_k"] == 5
+        assert mem0_config["reranker"]["temperature"] == 0.0
+
+    def test_reranker_ollama_local(self, tmp_path: Path):
+        """Ollama-based reranker uses llm sub-config."""
+        config = MemoryConfig(
+            reranker=MemoryRerankerConfig(
+                provider="llm_reranker",
+                model="llama3.1",
+            )
+        )
+        client = Mem0Client(config, tmp_path)
+        reranker_cfg = client._build_reranker_config()
+        assert reranker_cfg is not None
+        assert reranker_cfg["provider"] == "llm_reranker"
+        assert reranker_cfg["model"] == "llama3.1"
 
 
 # ---------------------------------------------------------------------------

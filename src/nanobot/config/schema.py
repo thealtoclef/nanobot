@@ -221,14 +221,24 @@ class MemoryEmbedderConfig(Base):
     ollama_base_url: str = ""
 
 
+class MemoryRerankerConfig(Base):
+    """Optional reranker config for mem0 search results."""
+
+    provider: str = "cohere"
+    model: str = ""
+    api_key: str = ""
+    api_key_env: str = ""
+    top_k: int | None = None
+    temperature: float | None = None
+
+
 class MemoryConfig(Base):
     """mem0 memory layer configuration."""
 
     enabled: bool = False
     llm: MemoryLLMConfig = Field(default_factory=MemoryLLMConfig)
     embedder: MemoryEmbedderConfig = Field(default_factory=MemoryEmbedderConfig)
-    vector_store_path: str = ""
-    history_db_path: str = ""
+    reranker: MemoryRerankerConfig | None = None
 
 
 class Config(BaseSettings):
