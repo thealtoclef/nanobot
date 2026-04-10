@@ -25,4 +25,5 @@ nano.*.save
 .DS_Store
 uv.lock
 *.db
+logs/
 .vscode
