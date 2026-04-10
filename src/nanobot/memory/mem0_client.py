@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from nanobot.config.schema import MemoryConfig
 
+import asyncio
+
 from mem0 import AsyncMemory
 
 
@@ -18,6 +20,7 @@ class Mem0Client:
         self._config = config
         self._workspace = workspace
         self._client: AsyncMemory | None = None
+        self._init_lock = asyncio.Lock()
 
     def _build_mem0_config(self) -> dict[str, Any]:
         """Build mem0 config — passthrough llm/embedder/reranker, hardcode vector store."""
@@ -42,7 +45,10 @@ class Mem0Client:
 
     async def initialize(self) -> None:
         """Initialize AsyncMemory from config. Must be called before use."""
-        self._client = AsyncMemory.from_config(self._build_mem0_config())
+        async with self._init_lock:
+            if self._client is not None:
+                return  # already initialized (race winner)
+            self._client = AsyncMemory.from_config(self._build_mem0_config())
 
     @property
     def client(self) -> AsyncMemory:

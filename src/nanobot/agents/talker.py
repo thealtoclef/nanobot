@@ -20,13 +20,12 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai_skills import SkillsCapability
 
+from nanobot.agents.deps import AgentDeps
 from nanobot.agents.helpers import BOOTSTRAP_FILES
 
 # ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
-
-AgentDepsT = dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +102,7 @@ class ToolAdapter:
             return result
 
         self._tools.append(tool_instance)
-        logger.debug("Registered tool: %s", tool_instance.name)
+        logger.debug("Registered tool: {name}", name=tool_instance.name)
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +146,7 @@ class TalkerAgent:
         hooks: Hooks | None = None,
         tool_timeout: float | None = None,
         retries: int = 1,
+        mem0_client: Any = None,
     ) -> None:
         self.workspace = workspace
         self.models = models
@@ -186,14 +186,19 @@ class TalkerAgent:
             model=pydantic_model,
             instructions=instructions,
             capabilities=capabilities if capabilities else None,
+            deps_type=AgentDeps,
             builtin_tools=self._builtin_tools if self._builtin_tools is not None else None,
             tools=self._tools if self._tools is not None else None,
             retries=retries,
             tool_timeout=tool_timeout,
         )
 
+        # Register memory tool after agent is created (needs self._agent)
+        if mem0_client:
+            self._register_memory_tool(mem0_client)
+
         model_names = ", ".join(getattr(m, "model_name", str(m)) for m in models)
-        logger.info("NanobotAgent initialized with models=%s", model_names)
+        logger.info("NanobotAgent initialized with models: {models}", models=model_names)
 
     @property
     def pydantic_agent(self) -> PydanticAIAgent:
@@ -205,11 +210,43 @@ class TalkerAgent:
             self._tool_adapter = ToolAdapter(self._agent, self.max_tool_result_chars)
         return self._tool_adapter
 
+    def _register_memory_tool(self, mem0_client: Any) -> None:
+        """Register search_memory as a PydanticAI native tool, bound to mem0_client."""
+
+        @self._agent.tool(
+            name="search_memory",
+            description=(
+                "Search the user's long-term memory for information about past conversations, "
+                "preferences, facts, or context. Use this when the user references something "
+                "from a previous conversation that isn't in the current chat history, or when "
+                "personalized context would improve your response."
+            ),
+        )
+        async def search_memory(ctx: RunContext[AgentDeps], query: str) -> str:
+            """Search your long-term memory for relevant information."""
+            client = ctx.deps.mem0_client
+            if client is None:
+                return "Memory not available."
+            if not ctx.deps.session_key:
+                return "Memory search not available (no session context)."
+            try:
+                if client._client is None:
+                    await client.initialize()
+                memories = await client.search(
+                    session_key=ctx.deps.session_key,
+                    query=query,
+                    limit=10,
+                )
+                return client.format_memories_for_prompt(memories) or "No relevant memories found."
+            except Exception:
+                return "Memory search failed."
+
     async def run(
         self,
         user_message: str | list[Any],
         *,
         message_history: list[ModelMessage] | None = None,
+        deps: AgentDeps | None = None,
     ) -> tuple[str, list[ModelMessage]]:
         """Run the agent with a user message and history.
 
@@ -219,6 +256,7 @@ class TalkerAgent:
         Args:
             user_message: The user's message.
             message_history: Pre-built PydanticAI message history.
+            deps: Per-run dependencies including session_key, channel, chat_id, and mem0_client.
 
         Returns:
             Tuple of (output_text, new_model_messages). Use
@@ -228,6 +266,7 @@ class TalkerAgent:
         result = await self._agent.run(
             user_prompt=user_message,
             message_history=message_history,
+            deps=deps,
         )
 
         output = result.output if result.output is not None else ""
@@ -238,6 +277,7 @@ class TalkerAgent:
         user_message: str | list[Any],
         *,
         message_history: list[ModelMessage] | None = None,
+        deps: AgentDeps | None = None,
     ):
         """Streaming variant — returns an async context manager with stream_text(delta=True).
 
@@ -253,6 +293,7 @@ class TalkerAgent:
         return self._agent.run_stream(
             user_message,
             message_history=message_history,
+            deps=deps,
         )
 
 

@@ -120,6 +120,13 @@ class AgentRunner:
         # Context builder (for building messages from history + current input)
         self.context = ContextBuilder(workspace, db=self.db, timezone=timezone)
 
+        # Mem0 memory client (lazy-initialized on first use when enabled)
+        self._mem0: Any = None
+        if memory_config and memory_config.enabled:
+            from nanobot.memory.mem0_client import Mem0Client
+
+            self._mem0 = Mem0Client(memory_config, workspace)
+
         # NanobotAgent (pydanticAI-based)
         self.agent = TalkerAgent(
             workspace=workspace,
@@ -129,6 +136,7 @@ class AgentRunner:
             context_window_tokens=context_window_tokens,
             timezone=timezone,
             skills_directories=skills_directories,
+            mem0_client=self._mem0,
         )
 
         # Subagent manager (import here to avoid circular import)
@@ -151,28 +159,22 @@ class AgentRunner:
             sessions=self.sessions,
             context_window_tokens=context_window_tokens,
             max_completion_tokens=4096,
+            mem0_client=self._mem0,
         )
 
-        # Mem0 memory client (lazy-initialized on first use when enabled)
-        self._mem0: Any = None
-        if memory_config and memory_config.enabled:
-            from nanobot.memory.mem0_client import Mem0Client
+        # Background tasks tracking
+        self._background_tasks: list[asyncio.Task] = []
 
-            self._mem0 = Mem0Client(memory_config, workspace)
-
-        # Lifecycle state
-        self._running = False
+        # MCP state (initialized lazily in _connect_mcp)
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
         self._mcp_connecting = False
+
+        # Runtime state
+        self._running = False
         self._active_tasks: dict[str, list[asyncio.Task]] = {}
-        self._background_tasks: list[asyncio.Task] = []
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._checkpoints: dict[str, dict[str, Any]] = {}
-        _max = int(os.environ.get("NANOBOT_MAX_CONCURRENT_REQUESTS", "3"))
-        self._concurrency_gate: asyncio.Semaphore | None = (
-            asyncio.Semaphore(_max) if _max > 0 else None
-        )
 
         # Command router
         self.commands = CommandRouter()
@@ -226,50 +228,6 @@ class AgentRunner:
         # Register tools on the NanobotAgent
         for name, tool in self.tools._tools.items():
             self.agent.tool_adapter.register(tool)
-
-    # -------------------------------------------------------------------------
-    # Mem0
-    # -------------------------------------------------------------------------
-
-    async def _ensure_mem0_initialized(self) -> None:
-        """Lazily initialize mem0 client on first use."""
-        if self._mem0 is not None and self._mem0._client is None:
-            await self._mem0.initialize()
-
-    async def _search_memory(self, session_key: str, query: str) -> str:
-        """Search mem0 memories and return formatted block for prompt injection."""
-        if not self._mem0:
-            return ""
-        await self._ensure_mem0_initialized()
-        try:
-            memories = await self._mem0.search(session_key=session_key, query=query, limit=10)
-            return self._mem0.format_memories_for_prompt(memories)
-        except Exception:
-            logger.warning("mem0 search failed", exc_info=True)
-            return ""
-
-    def _add_memory_bg(
-        self, session_key: str, user_content: str, assistant_content: str, channel: str | None
-    ) -> None:
-        """Fire-and-forget add to mem0 memory (non-blocking)."""
-        if not self._mem0:
-            return
-
-        async def _do_add() -> None:
-            try:
-                await self._ensure_mem0_initialized()
-                await self._mem0.add(
-                    session_key=session_key,
-                    messages=[
-                        {"role": "user", "content": user_content},
-                        {"role": "assistant", "content": assistant_content},
-                    ],
-                    metadata={"channel": channel},
-                )
-            except Exception:
-                logger.warning("mem0 add failed", exc_info=True)
-
-        asyncio.create_task(_do_add())
 
     # -------------------------------------------------------------------------
     # MCP
@@ -477,9 +435,6 @@ class AgentRunner:
             await self.history_compressor.maybe_summarize_by_tokens(key)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
 
-            # Search memories if mem0 is enabled
-            memory_block = await self._search_memory(key, msg.content)
-
             unconsolidated = self.sessions.get_unconsolidated_messages(key)
             model_history, prompt_content = self.context.build_messages(
                 history=unconsolidated,
@@ -487,7 +442,6 @@ class AgentRunner:
                 channel=channel,
                 chat_id=chat_id,
                 session_key=key,
-                memory_block=memory_block,
             )
             final_content, new_messages = await self._run_agent_loop(
                 model_history,
@@ -500,8 +454,6 @@ class AgentRunner:
             # Append new messages
             if new_messages:
                 self.sessions.add_messages(key, new_messages)
-            # Add to mem0 memory
-            self._add_memory_bg(key, msg.content, final_content or "", channel)
             self._clear_runtime_checkpoint(key)
             return OutboundMessage(
                 channel=channel,
@@ -531,9 +483,6 @@ class AgentRunner:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
-        # Search memories if mem0 is enabled
-        memory_block = await self._search_memory(session.key, msg.content)
-
         unconsolidated = self.sessions.get_unconsolidated_messages(msg.session_key)
         model_history, prompt_content = self.context.build_messages(
             history=unconsolidated,
@@ -542,7 +491,6 @@ class AgentRunner:
             channel=msg.channel,
             chat_id=msg.chat_id,
             session_key=session.key,
-            memory_block=memory_block,
         )
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
@@ -577,11 +525,6 @@ class AgentRunner:
         if new_messages:
             self.sessions.add_messages(session.key, new_messages)
 
-        # Add to mem0 memory
-        self._add_memory_bg(
-            session.key, msg.content, final_content or "", getattr(msg, "channel", None)
-        )
-
         self._clear_runtime_checkpoint(session.key)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
@@ -611,21 +554,35 @@ class AgentRunner:
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         on_stream: Callable[[str], Awaitable[None]] | None = None,
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
+        deps: Any = None,
     ) -> tuple[str | None, list]:
         """Run the agent loop with optional streaming.
 
         Returns:
             Tuple of (final_text, new_model_messages).
         """
+        from nanobot.agents.deps import AgentDeps
+
         await self._connect_mcp()
 
         model_messages = list(initial_messages)
         prompt = _to_user_content(user_content) if isinstance(user_content, list) else user_content
 
+        # Build deps if not provided
+        if deps is None:
+            deps = AgentDeps(
+                session_key=f"{channel}:{chat_id}",
+                channel=channel,
+                chat_id=chat_id,
+                message_id=message_id,
+                mem0_client=self._mem0,
+            )
+
         if on_stream is not None:
             async with self.agent.run_stream(
                 prompt,
                 message_history=model_messages,
+                deps=deps,
             ) as result:
                 async for delta in result.stream_text(delta=True):
                     if delta and on_stream:
@@ -638,6 +595,7 @@ class AgentRunner:
             output, new_messages = await self.agent.run(
                 prompt,
                 message_history=model_messages,
+                deps=deps,
             )
             return output, new_messages
 
@@ -684,7 +642,11 @@ class AgentRunner:
         # 3. Cancel background subagent tasks
         await self.subagents.cancel_all()
 
-        # 4. Close MCP connections
+        # 4. Drain mem0 ingest tasks
+        if self.history_compressor:
+            await self.history_compressor.close()
+
+        # 5. Close MCP connections
         await self.close_mcp()
 
         # 5. Dispose SQLAlchemy engine

@@ -275,7 +275,7 @@ class TestHistoryCompressorSummarize:
             sessions=MagicMock(),
             context_window_tokens=100,
         )
-        result = await summarizer.summarize_messages("session:test", [])
+        result = await summarizer.summarize_and_ingest("session:test", [])
         assert result is True
 
     @pytest.mark.asyncio
@@ -295,7 +295,7 @@ class TestHistoryCompressorSummarize:
 
         messages = _make_model_messages(5)
         with _summarizer_agent.override(model=_FailingModel()):
-            result = await summarizer.summarize_messages("session:test", messages)
+            result = await summarizer.summarize_and_ingest("session:test", messages)
 
         assert result is True
         histories = db.get_all_histories("session:test")

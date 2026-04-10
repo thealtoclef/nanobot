@@ -22,20 +22,16 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
-    def __init__(
-        self, workspace: Path, db: Database, timezone: str | None = None, mem0_client: Any = None
-    ):
+    def __init__(self, workspace: Path, db: Database, timezone: str | None = None):
         self.workspace = workspace
         self._db = db
         self.timezone = timezone
         self.skills = SkillsLoader(workspace)
-        self._mem0_client = mem0_client
 
     def build_system_prompt(
         self,
         skill_names: list[str] | None = None,
         session_key: str | None = None,
-        memory_block: str | None = None,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity()]
@@ -43,9 +39,6 @@ class ContextBuilder:
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
             parts.append(bootstrap)
-
-        if memory_block:
-            parts.append(memory_block)
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
@@ -103,7 +96,6 @@ Skills with available="false" need dependencies installed first - you can try in
         channel: str | None = None,
         chat_id: str | None = None,
         session_key: str | None = None,
-        memory_block: str | None = None,
     ) -> tuple[list[ModelMessage], str | list[dict[str, Any]]]:
         """Build history + prompt. History excludes the current message to avoid duplication with PydanticAI's user_prompt."""
         runtime_ctx = self._build_runtime_context(channel, chat_id, self.timezone)
@@ -113,12 +105,6 @@ Skills with available="false" need dependencies installed first - you can try in
             merged = f"{runtime_ctx}\n\n{user_content}"
         else:
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
-
-        if memory_block:
-            if isinstance(merged, str):
-                merged = f"{memory_block}\n\n{merged}"
-            else:
-                merged = [{"type": "text", "text": memory_block}] + merged
 
         enriched_history = list(history)
         if session_key:

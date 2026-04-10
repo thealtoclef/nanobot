@@ -141,7 +141,7 @@ async def test_run_subagent_no_duplication(tmp_path: Path) -> None:
     )
 
     # Override the subagent's pydantic_agent model to capture call arguments
-    with mgr._subagent.pydantic_agent.override(model=FunctionModel(capture)):
+    with mgr._subagent_agent.pydantic_agent.override(model=FunctionModel(capture)):
         await mgr._run_subagent(
             task_id="sub-dedup-test",
             task="do something important",

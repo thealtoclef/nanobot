@@ -55,9 +55,15 @@ class SubagentManager:
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}
+        self._agent = agent  # Store main agent for lazy subagent creation
+        self._subagent: Any = None  # Lazily initialized
 
-        # Build an isolated subagent agent with restricted tools
-        self._subagent = self._build_subagent_agent(agent)
+    @property
+    def _subagent_agent(self) -> Any:
+        """Lazily create the isolated subagent agent on first access."""
+        if self._subagent is None:
+            self._subagent = self._build_subagent_agent(self._agent)
+        return self._subagent
 
     def _build_subagent_agent(self, main_agent: Any) -> Any:
         """Create an isolated NanobotAgent for subagent use.
@@ -167,7 +173,7 @@ class SubagentManager:
 
         try:
             # Pass minimal history — subagent has its own system prompt via instructions
-            result_content, _ = await self._subagent.run(task, message_history=[])
+            result_content, _ = await self._subagent_agent.run(task, message_history=[])
 
             logger.info("Subagent [{}] completed successfully", task_id)
             await self._announce_result(task_id, label, task, result_content, origin, "ok")

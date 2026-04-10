@@ -143,7 +143,7 @@ class TestSummarizationFlowWithTestModel:
 
         messages = _make_model_messages(3)
         with _summarizer_agent.override(model=tm):
-            result = await summarizer.summarize_messages("session:test", messages)
+            result = await summarizer.summarize_and_ingest("session:test", messages)
 
         assert result is True
         histories = db.get_all_histories("session:test")
@@ -169,7 +169,7 @@ class TestSummarizationFlowWithTestModel:
 
         messages = _make_model_messages(3)
         with _summarizer_agent.override(model=tm):
-            await summarizer.summarize_messages("session:test", messages)
+            await summarizer.summarize_and_ingest("session:test", messages)
 
         sessions_mock.update_current_history_id.assert_called_once()
         call_args = sessions_mock.update_current_history_id.call_args
@@ -197,7 +197,7 @@ class TestSummarizationFlowWithTestModel:
 
         messages = _make_model_messages(2)
         with _summarizer_agent.override(model=tm):
-            await summarizer.summarize_messages("session:test", messages)
+            await summarizer.summarize_and_ingest("session:test", messages)
 
         histories = db.get_all_histories("session:test")
         assert len(histories) == 2

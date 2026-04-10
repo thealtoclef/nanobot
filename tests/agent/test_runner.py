@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -38,6 +39,10 @@ def _make_runner(tmp_path: Path, sessions: SessionManager) -> AgentRunner:
     runner._active_tasks = {}
     runner._background_tasks = []
     runner._checkpoints = {}
+    runner._mcp_stack = None
+    runner._mcp_connected = False
+    runner._mcp_connecting = False
+    runner._session_locks = {}
     return runner
 
 
@@ -206,7 +211,11 @@ class TestRunAgentLoopNoDuplication:
         runner._background_tasks = []
         runner._mcp_connected = True
         runner._mcp_connecting = False
+        runner._mcp_stack = None
         runner.mcp_servers = {}
+        runner._mem0 = None
+        runner._session_locks = {}
+        runner._checkpoints = {}
         return runner, agent
 
     @pytest.mark.asyncio
@@ -214,7 +223,7 @@ class TestRunAgentLoopNoDuplication:
         runner, mock_agent = self._make_runner_with_mock_agent(tmp_path)
         captured: dict = {}
 
-        async def fake_run(user_message, message_history=None):
+        async def fake_run(user_message, message_history=None, deps=None):
             captured["user_message"] = user_message
             captured["message_history"] = message_history or []
             return "ok", []
@@ -242,7 +251,7 @@ class TestRunAgentLoopNoDuplication:
         runner, mock_agent = self._make_runner_with_mock_agent(tmp_path)
         captured: dict = {}
 
-        async def fake_run(user_message, message_history=None):
+        async def fake_run(user_message, message_history=None, deps=None):
             captured["user_message"] = user_message
             captured["message_history"] = message_history or []
             return "ok", []
@@ -289,7 +298,7 @@ class TestRunAgentLoopNoDuplication:
             async def stream_text(self, delta=True):
                 yield "chunk"
 
-        def fake_run_stream(user_message, message_history=None):
+        def fake_run_stream(user_message, message_history=None, deps=None):
             captured["user_message"] = user_message
             captured["message_history"] = message_history or []
             return FakeStreamResult()
@@ -315,3 +324,39 @@ class TestRunAgentLoopNoDuplication:
             if isinstance(p, UserPromptPart)
         ]
         assert len(user_parts) == 0, "UserPromptPart in message_history — duplication!"
+
+
+class TestCloseMCP:
+    """Verify close_mcp works without requiring full __init__."""
+
+    @pytest.mark.asyncio
+    async def test_close_mcp_without_mcp_stack(self, tmp_path: Path) -> None:
+        """close_mcp should not crash when _mcp_stack is None (not connected)."""
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.workspace = tmp_path
+        runner._mcp_stack = None
+        runner._mcp_connected = False
+        runner._background_tasks = []
+
+        # Should not raise AttributeError
+        await runner.close_mcp()
+
+    @pytest.mark.asyncio
+    async def test_close_mcp_with_background_tasks(self, tmp_path: Path) -> None:
+        """close_mcp should drain background tasks before closing MCP."""
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.workspace = tmp_path
+        runner._mcp_stack = None
+        runner._mcp_connected = False
+        runner._background_tasks = []
+
+        async def dummy_task():
+            pass
+
+        # Add a background task
+        task = asyncio.create_task(dummy_task())
+        runner._background_tasks.append(task)
+
+        await runner.close_mcp()
+
+        assert len(runner._background_tasks) == 0

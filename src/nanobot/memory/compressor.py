@@ -36,6 +36,7 @@ class HistoryCompressor:
         sessions: SessionManager,
         context_window_tokens: int,
         max_completion_tokens: int = 4096,
+        mem0_client: Any | None = None,  # <-- NEW
     ):
         self._db = db
         self.agent = agent
@@ -45,6 +46,8 @@ class HistoryCompressor:
         self._locks: dict[str, asyncio.Lock] = {}
         self._history_stores: dict[str, HistoryStore] = {}
         self._summarizer = SummarizerAgent()  # type: ignore[operator]
+        self._mem0_client = mem0_client  # <-- NEW
+        self._mem0_tasks: set[asyncio.Task] = set()  # <-- NEW
 
     @property
     def _model(self):
@@ -59,8 +62,8 @@ class HistoryCompressor:
             self._history_stores[session_key] = HistoryStore(self._db, session_key)
         return self._history_stores[session_key]
 
-    async def summarize_messages(self, session_key: str, messages: list[ModelMessage]) -> bool:
-        """Summarize messages. Returns True on success (or empty input)."""
+    async def summarize_and_ingest(self, session_key: str, messages: list[ModelMessage]) -> bool:
+        """Summarize messages and ingest into mem0. Returns True on success (or empty input)."""
         if not messages:
             return True
 
@@ -84,7 +87,10 @@ class HistoryCompressor:
 
             if not summary:
                 logger.warning("Summarizer: summary is empty")
-                return self._fail_or_raw_summary(session_key, messages)
+                success = self._fail_or_raw_summary(session_key, messages)
+                if self._mem0_client:
+                    await self._ingest_to_mem0(session_key, messages)
+                return success
 
             blobs = self.sessions.get_unconsolidated_blobs_with_ids(session_key)
             boundary_row_id = blobs[-1][0] if blobs else None
@@ -92,15 +98,82 @@ class HistoryCompressor:
             history_id = store.add(summary, boundary_row_id)
             self.sessions.update_current_history_id(session_key, history_id)
 
+            # Ingest summarized messages into mem0
+            if self._mem0_client:
+                await self._ingest_to_mem0(session_key, messages)
+
             logger.info("Summarization done for {} messages", len(messages))
             return True
         except Exception:
             logger.exception("Summarization failed")
+            if self._mem0_client:
+                await self._ingest_to_mem0(session_key, messages)
             return self._fail_or_raw_summary(session_key, messages)
 
     def _fail_or_raw_summary(self, session_key: str, messages: list[ModelMessage]) -> bool:
         self._raw_summary(session_key, messages)
         return True
+
+    async def _ingest_to_mem0(self, session_key: str, messages: list[ModelMessage]) -> None:
+        """Fire-and-forget ingest of messages into mem0 (tracked)."""
+
+        async def _do_ingest() -> None:
+            try:
+                if self._mem0_client._client is None:
+                    await self._mem0_client.initialize()
+                pairs = self._extract_conversation_pairs(messages)
+                for user_text, assistant_text in pairs:
+                    await self._mem0_client.add(
+                        session_key=session_key,
+                        messages=[
+                            {"role": "user", "content": user_text},
+                            {"role": "assistant", "content": assistant_text},
+                        ],
+                    )
+            except Exception:
+                logger.warning("mem0 ingest failed", exc_info=True)
+
+        task = asyncio.create_task(_do_ingest())
+        self._mem0_tasks.add(task)
+        task.add_done_callback(self._mem0_tasks.discard)
+
+    @staticmethod
+    def _extract_conversation_pairs(messages: list[ModelMessage]) -> list[tuple[str, str]]:
+        """Extract (user_text, assistant_text) pairs from ModelMessages for mem0."""
+        from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+
+        pairs: list[tuple[str, str]] = []
+        pending_user: str | None = None
+
+        for msg in messages:
+            if isinstance(msg, ModelRequest):
+                for part in msg.parts:
+                    if isinstance(part, UserPromptPart):
+                        content = part.content
+                        if isinstance(content, list):
+                            content = " ".join(str(c) for c in content if isinstance(c, str))
+                        pending_user = str(content)
+            elif isinstance(msg, ModelResponse):
+                text_parts = [p.content for p in msg.parts if isinstance(p, TextPart) and p.content]
+                if text_parts and pending_user:
+                    pairs.append((pending_user, "\n".join(text_parts)))
+                    pending_user = None
+
+        return pairs
+
+    async def close(self) -> None:
+        """Wait for pending mem0 ingest tasks to complete (max 10s)."""
+        if not self._mem0_tasks:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*self._mem0_tasks, return_exceptions=True),
+                timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("mem0 ingest tasks did not complete in time")
+        finally:
+            self._mem0_tasks.clear()
 
     def _raw_summary(self, session_key: str, messages: list[ModelMessage]) -> None:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -139,7 +212,7 @@ class HistoryCompressor:
         """Summarize messages into history. Returns True on success."""
         if not messages:
             return True
-        return await self.summarize_messages(session_key, messages)
+        return await self.summarize_and_ingest(session_key, messages)
 
     async def maybe_summarize_by_tokens(self, session_key: str) -> None:
         """Loop: summarize old blobs until prompt fits within budget."""
@@ -194,7 +267,7 @@ class HistoryCompressor:
                     self.context_window_tokens,
                     len(chunk),
                 )
-                if not await self.summarize_messages(session_key, chunk):
+                if not await self.summarize_and_ingest(session_key, chunk):
                     return
 
                 unconsolidated = self.sessions.get_unconsolidated_messages(session_key)
