@@ -131,7 +131,7 @@ class TestMem0ClientConfig:
         config = MemoryConfig(
             reranker_enabled=True,
             reranker=MemoryRerankerConfig(
-                provider="cohere",
+                type="cohere",
                 model="rerank-english-v3.0",
                 api_key_env="COHERE_KEY",
                 top_k=5,
@@ -147,13 +147,18 @@ class TestMem0ClientConfig:
         assert mem0_config["reranker"]["top_k"] == 5
         assert mem0_config["reranker"]["temperature"] == 0.0
 
-    def test_reranker_ollama_local(self, tmp_path: Path):
-        """Ollama-based reranker uses llm sub-config."""
+    def test_reranker_llm_reranker_with_nested_llm(self, tmp_path: Path):
+        """llm_reranker type includes nested llm config built from MemoryLLMConfig."""
         config = MemoryConfig(
             reranker_enabled=True,
             reranker=MemoryRerankerConfig(
-                provider="llm_reranker",
+                type="llm_reranker",
                 model="llama3.1",
+                llm=MemoryLLMConfig(
+                    backend="ollama",
+                    model="llama3.1",
+                    base_url="http://localhost:11434",
+                ),
             ),
         )
         client = Mem0Client(config, tmp_path)
@@ -161,6 +166,9 @@ class TestMem0ClientConfig:
         assert reranker_cfg is not None
         assert reranker_cfg["provider"] == "llm_reranker"
         assert reranker_cfg["model"] == "llama3.1"
+        assert "llm" in reranker_cfg
+        assert reranker_cfg["llm"]["provider"] == "ollama"
+        assert reranker_cfg["llm"]["config"]["ollama_base_url"] == "http://localhost:11434"
 
 
 # ---------------------------------------------------------------------------

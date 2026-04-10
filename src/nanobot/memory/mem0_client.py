@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import MemoryConfig
+    from nanobot.config.schema import MemoryConfig, MemoryLLMConfig
 
 try:
     from mem0 import AsyncMemory
@@ -73,7 +73,7 @@ class Mem0Client:
 
         api_key = self._resolve_api_key(reranker.api_key, reranker.api_key_env)
         config: dict[str, Any] = {
-            "provider": reranker.provider,
+            "provider": reranker.type,
             "model": reranker.model,
         }
         if api_key:
@@ -83,7 +83,25 @@ class Mem0Client:
         if reranker.temperature is not None:
             config["temperature"] = reranker.temperature
 
+        # For llm_reranker, pass nested LLM config
+        if reranker.type == "llm_reranker" and reranker.llm is not None:
+            config["llm"] = self._build_llm_config_for_reranker(reranker.llm)
+
         return config
+
+    def _build_llm_config_for_reranker(self, llm: "MemoryLLMConfig") -> dict[str, Any]:
+        """Build LLM config dict for llm_reranker nested config."""
+        backend = llm.backend
+        api_key = self._resolve_api_key(llm.api_key, llm.api_key_env)
+        result: dict[str, Any] = {"provider": backend}
+        result["config"] = {"model": llm.model or "gpt-4o-mini"}
+        if api_key:
+            result["config"]["api_key"] = api_key
+        if backend == "ollama":
+            result["config"]["ollama_base_url"] = llm.base_url
+        else:
+            result["config"]["openai_base_url"] = llm.base_url
+        return result
 
     def _build_mem0_config(self) -> dict[str, Any]:
         config: dict[str, Any] = {

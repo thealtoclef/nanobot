@@ -244,14 +244,28 @@ class MemoryEmbedderConfig(Base):
 
 
 class MemoryRerankerConfig(Base):
-    """Optional reranker config for mem0 search results."""
+    """Optional reranker config for mem0 search results.
 
-    provider: str = "cohere"
+    type: reranker implementation — 'cohere', 'sentence_transformer',
+    'huggingface', or 'llm_reranker' (uses nested llm for the underlying LLM).
+    api_key and api_key_env are mutually exclusive — set one or the other, not both.
+    """
+
+    type: str = "cohere"
     model: str = ""
     api_key: str = ""
     api_key_env: str = ""
     top_k: int | None = None
     temperature: float | None = None
+    llm: MemoryLLMConfig | None = None  # for llm_reranker type only
+
+    @model_validator(mode="after")
+    def check_api_key_mutual_exclusion(self) -> "MemoryRerankerConfig":
+        if self.api_key and self.api_key_env:
+            raise ValueError(
+                "api_key and api_key_env are mutually exclusive. Set one or the other, not both."
+            )
+        return self
 
 
 class MemoryConfig(Base):
