@@ -263,7 +263,7 @@ class TestConcurrentAccess:
         assert len(rows) == n_threads // 2  # Half are append workers
 
 
-class TestHistoryAndFacts:
+class TestHistory:
     def test_add_history(self, tmp_path: Path) -> None:
         """Can add a history entry and retrieve it."""
         upgrade_db(tmp_path)
@@ -361,88 +361,3 @@ class TestHistoryAndFacts:
         assert histories[0].summary == "Summary 1"
         assert histories[1].id == h2
         assert histories[2].id == h3
-
-    def test_add_fact(self, tmp_path: Path) -> None:
-        """Can add a single fact and retrieve it."""
-        upgrade_db(tmp_path)
-        db = Database(tmp_path)
-        db.ensure_session("test-session")
-
-        fact_id = db.add_fact("test-session", "User prefers dark mode", "preference")
-        assert fact_id == 1
-
-        facts = db.get_facts("test-session")
-        assert len(facts) == 1
-        assert facts[0].content == "User prefers dark mode"
-        assert facts[0].category == "preference"
-
-    def test_add_facts_bulk(self, tmp_path: Path) -> None:
-        """add_facts bulk inserts multiple facts."""
-        upgrade_db(tmp_path)
-        db = Database(tmp_path)
-        db.ensure_session("test-session")
-
-        facts = [
-            ("User is admin", "role"),
-            ("Theme is dark", "preference"),
-            ("Email is test@example.com", "contact"),
-        ]
-        db.add_facts("test-session", facts)
-
-        retrieved = db.get_facts("test-session")
-        assert len(retrieved) == 3
-        assert retrieved[0].content == "User is admin"
-        assert retrieved[0].category == "role"
-        assert retrieved[1].content == "Theme is dark"
-        assert retrieved[1].category == "preference"
-        assert retrieved[2].content == "Email is test@example.com"
-        assert retrieved[2].category == "contact"
-
-    def test_add_facts_empty_list(self, tmp_path: Path) -> None:
-        """add_facts with empty list does nothing."""
-        upgrade_db(tmp_path)
-        db = Database(tmp_path)
-        db.ensure_session("test-session")
-
-        db.add_facts("test-session", [])
-        assert len(db.get_facts("test-session")) == 0
-
-    def test_get_fact_digest(self, tmp_path: Path) -> None:
-        """get_fact_digest builds correct formatted string."""
-        upgrade_db(tmp_path)
-        db = Database(tmp_path)
-        db.ensure_session("test-session")
-
-        facts = [
-            ("Likes pizza", "food"),
-            ("Allergic to nuts", "health"),
-        ]
-        db.add_facts("test-session", facts)
-
-        digest = db.get_fact_digest("test-session")
-        assert "## Known Facts" in digest
-        assert "[food] Likes pizza" in digest
-        assert "[health] Allergic to nuts" in digest
-
-    def test_get_fact_digest_truncation(self, tmp_path: Path) -> None:
-        """get_fact_digest truncates at max_tokens * 4 chars."""
-        upgrade_db(tmp_path)
-        db = Database(tmp_path)
-        db.ensure_session("test-session")
-
-        # Add a long fact
-        long_content = "x" * 1000
-        db.add_fact("test-session", long_content, "test")
-
-        digest = db.get_fact_digest("test-session", max_tokens=10)
-        # max_tokens=10 means max 40 chars
-        assert len(digest) <= 43  # 40 + len("...") + header
-
-    def test_get_fact_digest_empty(self, tmp_path: Path) -> None:
-        """get_fact_digest returns empty string when no facts."""
-        upgrade_db(tmp_path)
-        db = Database(tmp_path)
-        db.ensure_session("test-session")
-
-        digest = db.get_fact_digest("test-session")
-        assert digest == ""

@@ -1,11 +1,11 @@
-"""Summarizer and Extractor agent tests using PydanticAI's TestModel.
+"""Summarizer agent tests using PydanticAI's TestModel.
 
-Exercises the real ``_summarizer_agent`` and ``_extractor_agent`` with
+Exercises the real ``_summarizer_agent`` with
 ``agent.override(model=TestModel(...))`` — no patching of ``agent.run``.
-Validates that ``output_type=SummarizerResult`` and ``ExtractorResult``
-produce correct structured output, ``deps_type`` is injected into
-instructions, and the summarization flow works end-to-end with a
-deterministic model substitute.
+Validates that ``output_type=SummarizerResult`` produces correct
+structured output, ``deps_type`` is injected into instructions,
+and the summarization flow works end-to-end with a deterministic
+model substitute.
 """
 
 from __future__ import annotations
@@ -26,13 +26,10 @@ from pydantic_ai.models.test import TestModel
 from nanobot.memory import (
     SummarizerDeps,
     SummarizerResult,
-    ExtractorDeps,
-    ExtractorResult,
     HistoryStore,
 )
 from nanobot.memory.compressor import HistoryCompressor as HistorySummarizer
 from nanobot.agents.summarizer import _summarizer_agent
-from nanobot.agents.extractor import _extractor_agent
 from nanobot.db import Database, upgrade_db
 
 
@@ -53,18 +50,7 @@ def _summarizer_test_model(summary: str = "[2026-04-09 10:00] Test summary.") ->
     )
 
 
-def _extractor_test_model(
-    facts: list[dict] | None = None,
-) -> TestModel:
-    if facts is None:
-        facts = [{"content": "User likes testing", "category": "preference"}]
-    return TestModel(
-        custom_output_args={"facts": facts},
-    )
-
-
 _EMPTY_SUMMARIZER_DEPS = SummarizerDeps(existing_summary="", formatted_messages="")
-_EMPTY_EXTRACTOR_DEPS = ExtractorDeps(formatted_messages="", existing_facts="")
 
 
 @pytest.fixture
@@ -130,60 +116,6 @@ class TestSummarizerResultOutput:
                 user_prompt="Summarize.", model=tm, deps=_EMPTY_SUMMARIZER_DEPS
             )
         assert result.output.summary.startswith("[2026-04-09")
-
-
-# ---------------------------------------------------------------------------
-# TestExtractorResultOutput
-# ---------------------------------------------------------------------------
-
-
-class TestExtractorResultOutput:
-    """Verify TestModel produces ExtractorResult with facts list through the agent."""
-
-    @pytest.mark.asyncio
-    async def test_returns_extractor_result_type(self) -> None:
-        tm = _extractor_test_model()
-        with _extractor_agent.override(model=tm):
-            result = await _extractor_agent.run(
-                user_prompt="Extract facts.", model=tm, deps=_EMPTY_EXTRACTOR_DEPS
-            )
-        assert isinstance(result.output, ExtractorResult)
-
-    @pytest.mark.asyncio
-    async def test_facts_list_parsed(self) -> None:
-        facts = [
-            {"content": "User prefers dark mode", "category": "preference"},
-            {"content": "User works as a developer", "category": "fact"},
-        ]
-        tm = _extractor_test_model(facts=facts)
-        with _extractor_agent.override(model=tm):
-            result = await _extractor_agent.run(
-                user_prompt="Extract facts.", model=tm, deps=_EMPTY_EXTRACTOR_DEPS
-            )
-        assert len(result.output.facts) == 2
-        assert result.output.facts[0].content == "User prefers dark mode"
-        assert result.output.facts[0].category == "preference"
-        assert result.output.facts[1].content == "User works as a developer"
-        assert result.output.facts[1].category == "fact"
-
-    @pytest.mark.asyncio
-    async def test_empty_facts_list(self) -> None:
-        tm = _extractor_test_model(facts=[])
-        with _extractor_agent.override(model=tm):
-            result = await _extractor_agent.run(
-                user_prompt="Extract facts.", model=tm, deps=_EMPTY_EXTRACTOR_DEPS
-            )
-        assert result.output.facts == []
-
-    @pytest.mark.asyncio
-    async def test_facts_have_content_and_category(self) -> None:
-        facts = [{"content": "User loves coffee", "category": "preference"}]
-        tm = _extractor_test_model(facts=facts)
-        with _extractor_agent.override(model=tm):
-            result = await _extractor_agent.run(
-                user_prompt="Extract facts.", model=tm, deps=_EMPTY_EXTRACTOR_DEPS
-            )
-        assert all(hasattr(f, "content") and hasattr(f, "category") for f in result.output.facts)
 
 
 # ---------------------------------------------------------------------------
@@ -271,30 +203,6 @@ class TestSummarizationFlowWithTestModel:
         assert len(histories) == 2
         # New summary should be there
         assert "Updated with new info" in histories[1].summary
-
-    @pytest.mark.asyncio
-    async def test_resets_consecutive_failures(self, db: Database, mock_agent: MagicMock) -> None:
-        sessions_mock = MagicMock()
-        sessions_mock.get_unconsolidated_blobs_with_ids.return_value = []
-        sessions_mock.update_current_history_id = MagicMock()
-
-        summarizer = HistorySummarizer(
-            db=db,
-            agent=mock_agent,
-            sessions=sessions_mock,
-            context_window_tokens=100,
-        )
-        # Simulate prior failures
-        summarizer._consecutive_failures["session:test"] = 2
-
-        tm = _summarizer_test_model(summary="[2026-04-09 10:00] Recovery.")
-        mock_agent.pydantic_agent.model = tm
-
-        messages = _make_model_messages(2)
-        with _summarizer_agent.override(model=tm):
-            await summarizer.summarize_messages("session:test", messages)
-
-        assert summarizer._consecutive_failures.get("session:test", 0) == 0
 
     @pytest.mark.asyncio
     async def test_usage_tracked(self) -> None:

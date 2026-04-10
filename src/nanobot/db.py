@@ -52,13 +52,6 @@ class SessionRow(Base):
         cascade="all, delete-orphan",
         foreign_keys="HistoryRow.session_key",
     )
-    facts: Mapped[list["FactRow"]] = relationship(
-        "FactRow",
-        order_by="FactRow.id",
-        lazy="noload",
-        cascade="all, delete-orphan",
-        foreign_keys="FactRow.session_key",
-    )
 
 
 class MessageRow(Base):
@@ -89,21 +82,6 @@ class HistoryRow(Base):
     summarized_through_message_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
     )
-    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
-
-
-class FactRow(Base):
-    """A fact entry stored for a session."""
-
-    __tablename__ = "facts"
-    __table_args__ = (Index("idx_facts_session", "session_key"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_key: Mapped[str] = mapped_column(
-        String, ForeignKey("sessions.key", ondelete="CASCADE"), nullable=False
-    )
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    category: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
@@ -332,71 +310,3 @@ class Database:
                 .order_by(HistoryRow.id)
                 .all()
             )
-
-    # -------------------------------------------------------------------------
-    # Fact methods
-    # -------------------------------------------------------------------------
-
-    def add_fact(self, session_key: str, content: str, category: str) -> int:
-        """Insert FactRow, return id, update session updated_at."""
-        now_ms = self._now_ms()
-        with self.SessionFactory() as db:
-            row = FactRow(
-                session_key=session_key,
-                content=content,
-                category=category,
-                created_at=now_ms,
-            )
-            db.add(row)
-            db.flush()
-            inserted_id = row.id
-            db.execute(
-                update(SessionRow).where(SessionRow.key == session_key).values(updated_at=now_ms)
-            )
-            db.commit()
-            return inserted_id
-
-    def add_facts(self, session_key: str, facts: list[tuple[str, str]]) -> None:
-        """Bulk insert facts (each tuple is content, category)."""
-        if not facts:
-            return
-        now_ms = self._now_ms()
-        with self.SessionFactory() as db:
-            rows = [
-                FactRow(
-                    session_key=session_key,
-                    content=content,
-                    category=category,
-                    created_at=now_ms,
-                )
-                for content, category in facts
-            ]
-            db.add_all(rows)
-            db.execute(
-                update(SessionRow).where(SessionRow.key == session_key).values(updated_at=now_ms)
-            )
-            db.commit()
-
-    def get_facts(self, session_key: str) -> list[FactRow]:
-        """All facts for session ordered by id."""
-        with self.SessionFactory() as db:
-            return list(
-                db.query(FactRow)
-                .filter(FactRow.session_key == session_key)
-                .order_by(FactRow.id)
-                .all()
-            )
-
-    def get_fact_digest(self, session_key: str, max_tokens: int = 500) -> str:
-        """Build "## Known Facts\n- [category] content\n..." string. Truncate at max_tokens * 4 chars."""
-        facts = self.get_facts(session_key)
-        if not facts:
-            return ""
-        lines = ["## Known Facts"]
-        for fact in facts:
-            lines.append(f"- [{fact.category}] {fact.content}")
-        digest = "\n".join(lines)
-        max_chars = max_tokens * 4
-        if len(digest) > max_chars:
-            digest = digest[:max_chars] + "..."
-        return digest

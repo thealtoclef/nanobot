@@ -50,19 +50,24 @@ dependencies = [
 api = ["aiohttp>=3.9.0,<4.0.0"]
 discord = ["discord.py>=2.5.2,<3.0.0"]
 langfuse = ["langfuse>=3.0.0,<4.0.0"]
+memory = ["mem0ai>=1.0.0,<2.0.0", "chromadb>=0.4.0,<1.0.0"]
 
-all = ["nanobot[api,discord,langfuse]"]
-
-dev = [
-    "pytest>=9.0.0,<10.0.0",
-    "pytest-asyncio>=1.3.0,<2.0.0",
-    "aiohttp>=3.9.0,<4.0.0",
-    "pytest-cov>=6.0.0,<7.0.0",
-    "ruff>=0.1.0",
-]
+all = ["nanobot[api,discord,langfuse,memory]"]
 
 [project.scripts]
 nanobot = "nanobot.cli.commands:app"
+
+[dependency-groups]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "aiohttp",
+    "pytest-cov",
+]
+lint = [
+    "ruff",
+    "ty",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.2,<0.12"]

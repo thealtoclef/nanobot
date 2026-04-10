@@ -579,6 +579,7 @@ def serve(
         mcp_servers=runtime_config.tools.mcp_servers,
         channels_config=runtime_config.channels,
         timezone=runtime_config.agent.timezone,
+        memory_config=runtime_config.memory,
     )
 
     model_name = runtime_config.agent.models[0].name if runtime_config.agent.models else "unknown"
@@ -667,6 +668,7 @@ def gateway(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         timezone=config.agent.timezone,
+        memory_config=config.memory,
     )
 
     # Set cron callback (needs agent)
@@ -885,6 +887,7 @@ def agent(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         timezone=config.agent.timezone,
+        memory_config=config.memory,
     )
     restart_notice = consume_restart_notice_from_env()
     if restart_notice and should_show_cli_restart_notice(restart_notice, session_id):

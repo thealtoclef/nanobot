@@ -20,7 +20,7 @@ BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"]
 def format_messages_for_text(messages: list) -> str:
     """Format ModelMessages into readable text for agent prompts.
 
-    Used by SummarizerAgent, ExtractorAgent, and any agent that needs
+    Used by SummarizerAgent and any agent that needs
     to present conversation history as text.
     """
     lines: list[str] = []

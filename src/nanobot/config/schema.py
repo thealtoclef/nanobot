@@ -199,6 +199,38 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class MemoryLLMConfig(Base):
+    """LLM config for mem0's own extraction/update operations."""
+
+    provider: Literal["openai", "anthropic", "ollama"] = "openai"
+    model: str = "gpt-4o-mini"
+    api_key: str = ""
+    api_key_env: str = ""
+    base_url: str = ""
+    ollama_base_url: str = ""
+
+
+class MemoryEmbedderConfig(Base):
+    """Embedder config for mem0."""
+
+    provider: Literal["openai", "ollama"] = "openai"
+    model: str = "text-embedding-3-small"
+    api_key: str = ""
+    api_key_env: str = ""
+    base_url: str = ""
+    ollama_base_url: str = ""
+
+
+class MemoryConfig(Base):
+    """mem0 memory layer configuration."""
+
+    enabled: bool = False
+    llm: MemoryLLMConfig = Field(default_factory=MemoryLLMConfig)
+    embedder: MemoryEmbedderConfig = Field(default_factory=MemoryEmbedderConfig)
+    vector_store_path: str = ""
+    history_db_path: str = ""
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -209,6 +241,7 @@ class Config(BaseSettings):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
     @property
     def workspace_path(self) -> Path:

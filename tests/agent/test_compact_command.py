@@ -12,7 +12,6 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.test import TestModel
 
 if TYPE_CHECKING:
-    from nanobot.agents.extractor import ExtractorResult
     from nanobot.agents.summarizer import SummarizerResult
 
 
@@ -56,15 +55,10 @@ def _make_runner(tmp_path: Path):
     return runner
 
 
-def _make_test_model(
-    summary: str = "[2026-04-09 10:00] Test summary.",
-    facts: list[dict] | None = None,
-) -> TestModel:
-    """Create a TestModel with custom output for both summarization and extraction."""
-    if facts is None:
-        facts = [{"content": "User likes testing", "category": "preference"}]
+def _make_test_model(summary: str = "[2026-04-09 10:00] Test summary.") -> TestModel:
+    """Create a TestModel with custom output for summarization."""
     return TestModel(
-        custom_output_args={"summary": summary, "facts": facts},
+        custom_output_args={"summary": summary},
     )
 
 
@@ -82,19 +76,12 @@ class TestCompactCommand:
         except Exception:
             pass
 
-    async def test_compact_command_flow_compresses_and_clears(self, runner, tmp_path: Path) -> None:
-        """Full /compact flow: compresses messages into history + facts, then clears messages."""
+    async def test_compact_command_flow_compresses(self, runner, tmp_path: Path) -> None:
+        """Full /compact flow: compresses messages into history."""
         from nanobot.agents.summarizer import _summarizer_agent
-        from nanobot.agents.extractor import _extractor_agent
 
-        # Create test model with both summary and facts
-        tm = _make_test_model(
-            summary="Compressed session summary [test]",
-            facts=[
-                {"content": "User prefers concise answers", "category": "preference"},
-                {"content": "Working on a Python project", "category": "fact"},
-            ],
-        )
+        # Create test model with summary
+        tm = _make_test_model(summary="Compressed session summary [test]")
 
         # Set the model on the history compressor's agent
         runner.history_compressor.agent.pydantic_agent.model = tm
@@ -132,7 +119,7 @@ class TestCompactCommand:
         )
 
         # Use override context managers to set the test model
-        with _summarizer_agent.override(model=tm), _extractor_agent.override(model=tm):
+        with _summarizer_agent.override(model=tm):
             result = await cmd_compact(ctx)
 
         assert result.content == "Conversation compressed."
@@ -147,13 +134,6 @@ class TestCompactCommand:
         history_row = histories[-1]  # most recent
         assert "Compressed session summary" in history_row.summary
         # summarized_through_message_id points to the last compacted message row
-
-        # Verify: facts extracted
-        facts = runner.sessions.get_facts("test-session")
-        assert len(facts) == 2
-        contents = [f.content for f in facts]
-        assert any("prefers concise" in c for c in contents)
-        assert any("Python project" in c for c in contents)
 
         # Verify: session still exists with current_history_id pointing to the new history row
         session = runner.sessions.get_session("test-session")
@@ -187,69 +167,3 @@ class TestCompactCommand:
 
         # No history row should be created for empty session
         assert runner.sessions.get_current_history_row("empty-session") is None
-
-    async def test_compact_facts_accumulate(self, runner, tmp_path: Path) -> None:
-        """Facts from multiple /compact calls should accumulate."""
-        from nanobot.agents.summarizer import _summarizer_agent
-        from nanobot.agents.extractor import _extractor_agent
-
-        # Create test model for first compact
-        tm1 = _make_test_model(
-            summary="Compressed session summary [test]",
-            facts=[{"content": "Fact from round 1", "category": "fact"}],
-        )
-
-        # Set the model on the history compressor's agent
-        runner.history_compressor.agent.pydantic_agent.model = tm1
-
-        runner.sessions.ensure_session("multi-session")
-
-        # First compact
-        runner.sessions.add_messages(
-            "multi-session", [ModelRequest(parts=[UserPromptPart(content="Message 1")])]
-        )
-
-        from nanobot.command.builtin import cmd_compact
-        from nanobot.command.router import CommandContext
-        from nanobot.bus.events import InboundMessage
-
-        inbound = InboundMessage(
-            channel="cli",
-            sender_id="user",
-            chat_id="direct",
-            content="/compact",
-            session_key="multi-session",
-        )
-        ctx = CommandContext(
-            msg=inbound,
-            session=runner.sessions.get_session("multi-session"),
-            key="multi-session",
-            raw="/compact",
-            loop=runner,
-        )
-
-        with _summarizer_agent.override(model=tm1), _extractor_agent.override(model=tm1):
-            await cmd_compact(ctx)
-
-        # Facts after first compact
-        facts = runner.sessions.get_facts("multi-session")
-        assert len(facts) == 1
-
-        # Second compact with new extractor output
-        tm2 = _make_test_model(
-            summary="Compressed session summary [test]",
-            facts=[{"content": "Fact from round 2", "category": "fact"}],
-        )
-        runner.history_compressor.agent.pydantic_agent.model = tm2
-        runner.sessions.add_messages(
-            "multi-session", [ModelRequest(parts=[UserPromptPart(content="Message 2")])]
-        )
-        with _summarizer_agent.override(model=tm2), _extractor_agent.override(model=tm2):
-            await cmd_compact(ctx)
-
-        # Facts should now be 2 (accumulated)
-        facts = runner.sessions.get_facts("multi-session")
-        assert len(facts) == 2
-        contents = [f.content for f in facts]
-        assert any("round 1" in c for c in contents)
-        assert any("round 2" in c for c in contents)
