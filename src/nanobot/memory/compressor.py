@@ -33,7 +33,7 @@ class HistoryCompressor:
 
     def __init__(
         self,
-        db: Any,  # TODO: Track 4 will provide proper type
+        db: Any,
         agent: Talker,
         sessions: SessionManager,
         context_window_tokens: int,
@@ -48,9 +48,13 @@ class HistoryCompressor:
         self._history_stores: dict[str, HistoryStore] = {}
         self._fact_stores: dict[str, FactStore] = {}
         self._consecutive_failures: dict[str, int] = {}
-        # TODO: Track 4 will provide these agent classes
         self._summarizer = SummarizerAgent()  # type: ignore[operator]
         self._extractor = ExtractorAgent()  # type: ignore[operator]
+
+    @property
+    def _model(self):
+        """The agent's pydantic model, resolved at access time for testability."""
+        return self.agent.pydantic_agent.model
 
     def get_lock(self, session_key: str) -> asyncio.Lock:
         return self._locks.setdefault(session_key, asyncio.Lock())
@@ -73,7 +77,7 @@ class HistoryCompressor:
         store = self._get_history_store(session_key)
         existing_summary = store.get_current_summary() or ""
         formatted = format_messages_for_text(messages)
-        model = self.agent.pydantic_agent.model
+        model = self._model
 
         try:
             deps = SummarizerDeps(
@@ -114,7 +118,7 @@ class HistoryCompressor:
             formatted = format_messages_for_text(messages)
             existing_facts = fact_store.get_existing_facts_text()
             deps = ExtractorDeps(formatted_messages=formatted, existing_facts=existing_facts)
-            model = self.agent.pydantic_agent.model
+            model = self._model
 
             result = await self._extractor.run(
                 user_prompt="Extract facts from the conversation.",
