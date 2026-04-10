@@ -198,6 +198,7 @@ class TestGetFieldTypeInfo:
 
     def test_handles_none_annotation(self):
         """Field with None annotation defaults to str."""
+
         class Model(BaseModel):
             field: Any = None
 
@@ -377,6 +378,7 @@ class TestProviderChannelInfo:
         # Should include at least some channels
         assert len(names) >= 0
 
+
 class _SimpleDraftModel(BaseModel):
     api_key: str = ""
 
@@ -483,9 +485,11 @@ class TestRunOnboardExitBehavior:
 
         monkeypatch.setattr(onboard_wizard, "_show_main_menu_header", lambda: None)
         monkeypatch.setattr(onboard_wizard, "questionary", SimpleNamespace(select=fake_select))
-        monkeypatch.setattr(onboard_wizard, "_configure_general_settings", fake_configure_general_settings)
+        monkeypatch.setattr(
+            onboard_wizard, "_configure_general_settings", fake_configure_general_settings
+        )
 
         result = run_onboard(initial_config=initial_config)
 
         assert result.should_save is False
-        assert result.config.model_dump(by_alias=True) == initial_config.model_dump(by_alias=True)
+        assert result.config.model_dump() == initial_config.model_dump()

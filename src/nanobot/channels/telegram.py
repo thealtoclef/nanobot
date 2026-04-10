@@ -208,7 +208,7 @@ class TelegramChannel(BaseChannel):
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
-        return TelegramConfig().model_dump(by_alias=True)
+        return TelegramConfig().model_dump()
 
     _STREAM_EDIT_INTERVAL = 0.6  # min seconds between edit_message_text calls
 

@@ -1152,7 +1152,7 @@ def _show_summary(config: Config) -> None:
 
 def _has_unsaved_changes(original: Config, current: Config) -> bool:
     """Return True when the onboarding session has committed changes."""
-    return original.model_dump(by_alias=True) != current.model_dump(by_alias=True)
+    return original.model_dump() != current.model_dump()
 
 
 def _prompt_main_menu_exit(has_unsaved_changes: bool) -> str:

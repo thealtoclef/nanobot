@@ -16,8 +16,8 @@ runner = CliRunner()
 
 def _strip_ansi(text):
     """Remove ANSI escape codes from text."""
-    ansi_escape = re.compile(r'\x1b\[[0-9;]*m')
-    return ansi_escape.sub('', text)
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    return ansi_escape.sub("", text)
 
 
 @pytest.fixture
@@ -25,11 +25,12 @@ def mock_paths(tmp_path):
     """Mock config/workspace paths for test isolation."""
     import shutil
 
-    with patch("nanobot.config.loader.get_config_path") as mock_cp, \
-         patch("nanobot.config.loader.save_config") as mock_sc, \
-         patch("nanobot.config.loader.load_config") as mock_lc, \
-         patch("nanobot.cli.commands.get_workspace_path") as mock_ws:
-
+    with (
+        patch("nanobot.config.loader.get_config_path") as mock_cp,
+        patch("nanobot.config.loader.save_config") as mock_sc,
+        patch("nanobot.config.loader.load_config") as mock_lc,
+        patch("nanobot.cli.commands.get_workspace_path") as mock_ws,
+    ):
         base_dir = tmp_path / "test_onboard_data"
         if base_dir.exists():
             shutil.rmtree(base_dir)
@@ -45,7 +46,7 @@ def mock_paths(tmp_path):
         def _save_config(config: Config, config_path: Path | None = None):
             target = config_path or config_file
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(config.model_dump(by_alias=True)), encoding="utf-8")
+            target.write_text(json.dumps(config.model_dump()), encoding="utf-8")
 
         mock_sc.side_effect = _save_config
 
@@ -67,7 +68,9 @@ def test_onboard_fresh_install(mock_paths):
     assert "nanobot is ready" in result.stdout
     assert config_file.exists()
     assert (workspace_dir / "AGENTS.md").exists()
-    assert (workspace_dir / "sessions.db").exists(), "sessions.db should be created by Database init"
+    assert (workspace_dir / "sessions.db").exists(), (
+        "sessions.db should be created by Database init"
+    )
     expected_workspace = Config().workspace_path
     assert mock_ws.call_args.args == (expected_workspace,)
 
@@ -349,4 +352,3 @@ class TestCmdStop:
 
         # 1 active task + 2 subagents = 3
         assert "3" in result.content
-
