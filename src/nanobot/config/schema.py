@@ -238,7 +238,8 @@ class MemoryConfig(Base):
     enabled: bool = False
     llm: MemoryLLMConfig = Field(default_factory=MemoryLLMConfig)
     embedder: MemoryEmbedderConfig = Field(default_factory=MemoryEmbedderConfig)
-    reranker: MemoryRerankerConfig | None = None
+    reranker_enabled: bool = False
+    reranker: MemoryRerankerConfig = Field(default_factory=MemoryRerankerConfig)
 
 
 class Config(BaseSettings):

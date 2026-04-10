@@ -71,10 +71,11 @@ class Mem0Client:
         return result
 
     def _build_reranker_config(self) -> dict[str, Any] | None:
-        """Build reranker config if set in MemoryConfig."""
-        reranker = self._config.reranker
-        if reranker is None:
+        """Build reranker config if reranker_enabled is True in MemoryConfig."""
+        if not self._config.reranker_enabled:
             return None
+
+        reranker = self._config.reranker
 
         api_key = self._resolve_api_key(reranker.api_key, reranker.api_key_env)
         config: dict[str, Any] = {

@@ -117,16 +117,17 @@ class TestMem0ClientConfig:
         assert "reranker" not in mem0_config
 
     def test_reranker_config_full(self, tmp_path: Path, monkeypatch):
-        """Reranker is included in config when set."""
+        """Reranker is included in config when reranker_enabled=True."""
         monkeypatch.setenv("COHERE_KEY", "test-cohere-key")
         config = MemoryConfig(
+            reranker_enabled=True,
             reranker=MemoryRerankerConfig(
                 provider="cohere",
                 model="rerank-english-v3.0",
                 api_key_env="COHERE_KEY",
                 top_k=5,
                 temperature=0.0,
-            )
+            ),
         )
         client = Mem0Client(config, tmp_path)
         mem0_config = client._build_mem0_config()
@@ -140,10 +141,11 @@ class TestMem0ClientConfig:
     def test_reranker_ollama_local(self, tmp_path: Path):
         """Ollama-based reranker uses llm sub-config."""
         config = MemoryConfig(
+            reranker_enabled=True,
             reranker=MemoryRerankerConfig(
                 provider="llm_reranker",
                 model="llama3.1",
-            )
+            ),
         )
         client = Mem0Client(config, tmp_path)
         reranker_cfg = client._build_reranker_config()
