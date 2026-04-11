@@ -109,9 +109,126 @@ def build_help_text() -> str:
         "/stop — Stop the current task",
         "/restart — Restart the bot",
         "/status — Show bot status",
+        "/subagents [list|log <id>|kill <id>] — Manage background agents",
         "/help — Show available commands",
     ]
     return "\n".join(lines)
+
+
+async def cmd_subagents(ctx: CommandContext) -> OutboundMessage:
+    """Handle /subagents list|log|kill."""
+    args = getattr(ctx, "args", None)
+    if args is not None:
+        args = args.strip()
+    else:
+        args = ""
+
+    sub = ctx.loop.subagents
+
+    if not args:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content="/subagents — Manage background agents\n\n"
+            "  /subagents list      — List all subagents\n"
+            "  /subagents log <id>  — Get logs for a subagent\n"
+            "  /subagents kill <id> — Kill a running subagent",
+        )
+
+    if args == "list":
+        return await _subagents_list(ctx, sub)
+
+    if args.startswith("log "):
+        id = args[4:].strip()
+        return await _subagents_log(ctx, sub, id)
+
+    if args.startswith("kill "):
+        id = args[5:].strip()
+        return await _subagents_kill(ctx, sub, id)
+
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content="/subagents — Manage background agents\n\n"
+        "  /subagents list      — List all subagents\n"
+        "  /subagents log <id>  — Get logs for a subagent\n"
+        "  /subagents kill <id> — Kill a running subagent",
+    )
+
+
+async def _subagents_list(ctx: CommandContext, sub) -> OutboundMessage:
+    """List all subagents for the session."""
+    session_key = ctx.key
+    metas = sub.list_subagents(session_key)
+    if not metas:
+        content = "No subagents."
+    else:
+        lines = ["Subagents:"]
+        for m in metas:
+            status_icon = {
+                "running": "🔄",
+                "completed": "✅",
+                "failed": "❌",
+                "cancelled": "🚫",
+                "interrupted": "⚡",
+            }.get(m.status, "?")
+            lines.append(f"  {status_icon} [{m.id[:8]}] {m.label} — {m.status}")
+        content = "\n".join(lines)
+    return OutboundMessage(channel=ctx.msg.channel, chat_id=ctx.msg.chat_id, content=content)
+
+
+async def _subagents_log(ctx: CommandContext, sub, id: str) -> OutboundMessage:
+    """Get log for a specific subagent by UUID."""
+    meta = sub.get_by_id(id)
+    if not meta:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=f"No subagent with id '{id}'.",
+        )
+
+    sessions = ctx.loop.sessions
+    try:
+        messages = sessions.get_all_messages(meta.subagent_session_key)
+    except (KeyError, Exception):
+        messages = []
+
+    if messages:
+        from nanobot.agents.helpers import format_messages_for_text
+
+        content = format_messages_for_text(messages)
+    elif meta.result:
+        content = f"[{meta.label}] Final result:\n{meta.result}"
+    else:
+        content = f"No logs available for '{meta.label}'."
+
+    return OutboundMessage(channel=ctx.msg.channel, chat_id=ctx.msg.chat_id, content=content)
+
+
+async def _subagents_kill(ctx: CommandContext, sub, id: str) -> OutboundMessage:
+    """Kill a running subagent by UUID."""
+    meta = sub.get_by_id(id)
+    if not meta:
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=f"No subagent with id '{id}'.",
+        )
+
+    if meta.status != "running":
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=f"'{meta.label}' is already {meta.status}.",
+        )
+
+    killed = await sub.kill_by_id(id)
+    verb = "killed" if killed else "could not kill"
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=f"Subagent '{meta.label}' {verb}.",
+    )
 
 
 def register_builtin_commands(router: CommandRouter) -> None:
@@ -121,3 +238,5 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.priority("/status", cmd_status)
     router.exact("/compact", cmd_compact)
     router.exact("/help", cmd_help)
+    router.exact("/subagents", cmd_subagents)
+    router.prefix("/subagents ", cmd_subagents)

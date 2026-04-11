@@ -143,6 +143,7 @@ class AgentRunner:
         from nanobot.subagent import SubagentManager
 
         self.subagents = SubagentManager(
+            db=self.db,
             agent=self.agent,
             workspace=workspace,
             bus=bus,
@@ -151,6 +152,7 @@ class AgentRunner:
             exec_config=self.exec_config,
             restrict_to_workspace=self.restrict_to_workspace,
         )
+        self.subagents.set_sessions(self.sessions)
 
         # History compressor
         self.history_compressor = HistoryCompressor(

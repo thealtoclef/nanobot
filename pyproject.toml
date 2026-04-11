@@ -3,7 +3,7 @@ name = "nanobot"
 version = "0.1.4.post6"
 description = "A lightweight personal AI assistant framework"
 readme = { file = "README.md", content-type = "text/markdown" }
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "MIT"
 authors = [{ name = "nanobot contributors" }]
 keywords = ["ai", "agent", "chatbot"]

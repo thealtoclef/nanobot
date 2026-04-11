@@ -48,7 +48,7 @@ class SpawnTool(Tool):
                 },
                 "label": {
                     "type": "string",
-                    "description": "Optional short label for the task (for display)",
+                    "description": "Optional short label/slug for the subagent (e.g., 'competitor-research'). The LLM will generate this if not provided.",
                 },
             },
             "required": ["task"],
@@ -58,6 +58,7 @@ class SpawnTool(Tool):
         """Spawn a subagent to execute the given task."""
         return await self._manager.spawn(
             task=task,
+            parent_key=self._session_key,
             label=label,
             origin_channel=self._origin_channel,
             origin_chat_id=self._origin_chat_id,

@@ -1,6 +1,7 @@
 """Tests for nanobot.db.Database."""
 
 import threading
+import uuid
 from collections import Counter
 from pathlib import Path
 
@@ -361,3 +362,450 @@ class TestHistory:
         assert histories[0].summary == "Summary 1"
         assert histories[1].id == h2
         assert histories[2].id == h3
+
+
+class TestSubagentSessions:
+    """Tests for subagent_sessions CRUD operations."""
+
+    def test_create_subagent_session(self, tmp_path: Path) -> None:
+        """create_subagent_session creates a row with correct values."""
+        import pendulum
+
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("parent-1")
+
+        now_ms = int(pendulum.now("UTC").float_timestamp * 1000)
+        id = str(uuid.uuid7())
+        row_id = db.create_subagent_session(
+            id=id,
+            parent_key="parent-1",
+            label="my-subagent",
+            task="Do something",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        assert row_id == id
+        row = db.get_subagent_session(id)
+        assert row is not None
+        assert row.id == id
+        assert row.parent_key == "parent-1"
+        assert row.label == "my-subagent"
+        assert row.task == "Do something"
+        assert row.status == "running"
+        assert row.result is None
+        assert row.subagent_session_key == f"subagent:{id}"
+        assert row.origin_channel == "cli"
+        assert row.origin_chat_id == "direct"
+        assert row.created_at >= now_ms
+        assert row.completed_at is None
+
+    def test_create_subagent_session_idempotent_labels_same_parent(self, tmp_path: Path) -> None:
+        """Two subagents with same label on DIFFERENT parent_keys are allowed."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("parent-1")
+        db.ensure_session("parent-2")
+
+        id1 = str(uuid.uuid7())
+        id2 = str(uuid.uuid7())
+        # Same label "same-label" but different parents
+        db.create_subagent_session(
+            id=id1,
+            parent_key="parent-1",
+            label="same-label",
+            task="Task 1",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+        db.create_subagent_session(
+            id=id2,
+            parent_key="parent-2",
+            label="same-label",
+            task="Task 2",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        assert id1 != id2
+        row1 = db.get_subagent_session_by_label("same-label", "parent-1")
+        row2 = db.get_subagent_session_by_label("same-label", "parent-2")
+        assert row1 is not None
+        assert row2 is not None
+        assert row1.id == id1
+        assert row2.id == id2
+
+    def test_complete_subagent_session_updates_status_result_completed_at(
+        self, tmp_path: Path
+    ) -> None:
+        """complete_subagent_session sets status, result, and completed_at."""
+        import pendulum
+
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("parent-1")
+
+        id = str(uuid.uuid7())
+        db.create_subagent_session(
+            id=id,
+            parent_key="parent-1",
+            label="completable",
+            task="Do it",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        now_ms = int(pendulum.now("UTC").float_timestamp * 1000)
+        db.complete_subagent_session(id=id, status="completed", result="All done!")
+
+        row = db.get_subagent_session(id)
+        assert row is not None
+        assert row.status == "completed"
+        assert row.result == "All done!"
+        assert row.completed_at is not None
+        assert row.completed_at >= now_ms
+
+    def test_get_subagent_session(self, tmp_path: Path) -> None:
+        """get_subagent_session retrieves row by id."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("parent-1")
+
+        id = str(uuid.uuid7())
+        db.create_subagent_session(
+            id=id,
+            parent_key="parent-1",
+            label="get-test",
+            task="Get this",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        row = db.get_subagent_session(id)
+        assert row is not None
+        assert row.id == id
+        assert row.label == "get-test"
+
+    def test_get_subagent_session_not_found(self, tmp_path: Path) -> None:
+        """get_subagent_session returns None for non-existent id."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+
+        row = db.get_subagent_session(str(uuid.uuid7()))
+        assert row is None
+
+    def test_get_subagent_session_by_label(self, tmp_path: Path) -> None:
+        """get_subagent_session_by_label finds by label and parent_key."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("parent-find")
+
+        id = str(uuid.uuid7())
+        db.create_subagent_session(
+            id=id,
+            parent_key="parent-find",
+            label="find-me",
+            task="Find this task",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        row = db.get_subagent_session_by_label("find-me", "parent-find")
+        assert row is not None
+        assert row.label == "find-me"
+        assert row.id == id
+
+    def test_get_subagent_session_by_label_not_found(self, tmp_path: Path) -> None:
+        """get_subagent_session_by_label returns None when not found."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("parent-1")
+
+        row = db.get_subagent_session_by_label("nonexistent", "parent-1")
+        assert row is None
+
+    def test_get_subagent_session_by_label_uniqueness_per_parent(self, tmp_path: Path) -> None:
+        """Same label can exist for different parent_keys."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("parent-a")
+        db.ensure_session("parent-b")
+
+        id_a = str(uuid.uuid7())
+        id_b = str(uuid.uuid7())
+        db.create_subagent_session(
+            id=id_a,
+            parent_key="parent-a",
+            label="shared",
+            task="Task A",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+        db.create_subagent_session(
+            id=id_b,
+            parent_key="parent-b",
+            label="shared",
+            task="Task B",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        row_a = db.get_subagent_session_by_label("shared", "parent-a")
+        row_b = db.get_subagent_session_by_label("shared", "parent-b")
+        assert row_a is not None
+        assert row_b is not None
+        assert row_a.id == id_a
+        assert row_b.id == id_b
+
+    def test_list_subagent_sessions_no_filter(self, tmp_path: Path) -> None:
+        """list_subagent_sessions with no filter returns all."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("p1")
+        db.ensure_session("p2")
+
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="p1",
+            label="S1",
+            task="T1",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="p2",
+            label="S2",
+            task="T2",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        rows = db.list_subagent_sessions()
+        assert len(rows) == 2
+
+    def test_list_subagent_sessions_filter_by_parent_key(self, tmp_path: Path) -> None:
+        """list_subagent_sessions filters correctly by parent_key."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("p1")
+        db.ensure_session("p2")
+
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="p1",
+            label="S1",
+            task="T1",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="p2",
+            label="S2",
+            task="T2",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="p1",
+            label="S3",
+            task="T3",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        rows = db.list_subagent_sessions(parent_key="p1")
+        assert len(rows) == 2
+        for row in rows:
+            assert row.parent_key == "p1"
+
+    def test_list_subagent_sessions_empty_for_unknown_parent(self, tmp_path: Path) -> None:
+        """list_subagent_sessions returns empty list for unknown parent_key."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("known")
+
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="known",
+            label="S1",
+            task="T1",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        rows = db.list_subagent_sessions(parent_key="unknown-parent")
+        assert rows == []
+
+    def test_delete_subagent_sessions(self, tmp_path: Path) -> None:
+        """delete_subagent_sessions deletes all subagents for a parent_key."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("to-delete")
+
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="to-delete",
+            label="D1",
+            task="T1",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="to-delete",
+            label="D2",
+            task="T2",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="to-delete",
+            label="D3",
+            task="T3",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        count = db.delete_subagent_sessions("to-delete")
+        assert count == 3
+
+        remaining = db.list_subagent_sessions(parent_key="to-delete")
+        assert remaining == []
+
+    def test_delete_subagent_sessions_returns_count(self, tmp_path: Path) -> None:
+        """delete_subagent_sessions returns number of deleted rows."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("count-test")
+
+        for i in range(5):
+            db.create_subagent_session(
+                id=str(uuid.uuid7()),
+                parent_key="count-test",
+                label=f"C{i}",
+                task=f"Task {i}",
+                origin_channel="cli",
+                origin_chat_id="direct",
+            )
+
+        count = db.delete_subagent_sessions("count-test")
+        assert count == 5
+
+    def test_delete_subagent_sessions_none_exist(self, tmp_path: Path) -> None:
+        """delete_subagent_sessions on non-existent parent_key returns 0."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+
+        count = db.delete_subagent_sessions("nonexistent-parent")
+        assert count == 0
+
+    def test_recover_interrupted_subagents_marks_running_as_interrupted(
+        self, tmp_path: Path
+    ) -> None:
+        """recover_interrupted_subagents changes 'running' status to 'interrupted'."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("recovery-test")
+
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="recovery-test",
+            label="R1",
+            task="Task 1",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+        db.create_subagent_session(
+            id=str(uuid.uuid7()),
+            parent_key="recovery-test",
+            label="R2",
+            task="Task 2",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        recovered = db.recover_interrupted_subagents()
+        assert recovered == 2
+
+        row1 = db.get_subagent_session_by_label("R1", "recovery-test")
+        row2 = db.get_subagent_session_by_label("R2", "recovery-test")
+        assert row1 is not None
+        assert row2 is not None
+        assert row1.status == "interrupted"
+        assert row2.status == "interrupted"
+
+    def test_recover_interrupted_subagents_returns_count(self, tmp_path: Path) -> None:
+        """recover_interrupted_subagents returns number of recovered rows."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("count-recovery")
+
+        for i in range(4):
+            db.create_subagent_session(
+                id=str(uuid.uuid7()),
+                parent_key="count-recovery",
+                label=f"CR{i}",
+                task=f"Task {i}",
+                origin_channel="cli",
+                origin_chat_id="direct",
+            )
+
+        recovered = db.recover_interrupted_subagents()
+        assert recovered == 4
+
+    def test_recover_interrupted_subagents_ignores_completed(self, tmp_path: Path) -> None:
+        """recover_interrupted_subagents does not change 'completed' rows."""
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("ignore-test")
+
+        id = str(uuid.uuid7())
+        db.create_subagent_session(
+            id=id,
+            parent_key="ignore-test",
+            label="IG1",
+            task="Task 1",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+        db.complete_subagent_session(id=id, status="completed", result="Done")
+
+        recovered = db.recover_interrupted_subagents()
+        assert recovered == 0
+
+        row = db.get_subagent_session(id)
+        assert row is not None
+        assert row.status == "completed"
+
+    def test_recover_interrupted_subagents_sets_completed_at(self, tmp_path: Path) -> None:
+        """recover_interrupted_subagents sets completed_at timestamp."""
+        import pendulum
+
+        upgrade_db(tmp_path)
+        db = Database(tmp_path)
+        db.ensure_session("ts-test")
+
+        id = str(uuid.uuid7())
+        db.create_subagent_session(
+            id=id,
+            parent_key="ts-test",
+            label="TS1",
+            task="Task 1",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
+
+        before = int(pendulum.now("UTC").float_timestamp * 1000)
+        recovered = db.recover_interrupted_subagents()
+        after = int(pendulum.now("UTC").float_timestamp * 1000)
+
+        assert recovered == 1
+        row = db.get_subagent_session(id)
+        assert row is not None
+        assert row.completed_at is not None
+        assert before <= row.completed_at <= after
