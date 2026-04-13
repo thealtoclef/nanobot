@@ -1,0 +1,12 @@
+services:
+  cube:
+    image: cubejs/cube:latest
+    ports:
+      - "4000:4000"
+    environment:
+      - CUBEJS_DEV_MODE=true
+      - CUBEJS_API_SECRET=secret
+      - CUBEJS_DB_TYPE=duckdb
+      - CUBEJS_DB_DUCKDB_DATABASE_PATH=/cube/conf/db/jaffle_shop.duckdb
+    volumes:
+      - ./conf:/cube/conf

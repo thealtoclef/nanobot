@@ -1,0 +1,35 @@
+cubes:
+  - name: customers
+    sql_table: jaffle_shop.main.customers
+    description: This table has basic information about a customer, as well as some derived facts based on a customer's orders
+    dimensions:
+      - name: customer_id
+        sql: customer_id
+        type: number
+        description: This is a unique identifier for a customer
+      - name: first_name
+        sql: first_name
+        type: string
+        description: Customer's first name. PII.
+      - name: last_name
+        sql: last_name
+        type: string
+        description: Customer's last name. PII.
+      - name: first_order
+        sql: first_order
+        type: time
+        description: Date (UTC) of a customer's first order
+      - name: most_recent_order
+        sql: most_recent_order
+        type: time
+        description: Date (UTC) of a customer's most recent order
+      - name: number_of_orders
+        sql: number_of_orders
+        type: number
+        description: Count of the number of orders a customer has placed
+      - name: customer_lifetime_value
+        sql: customer_lifetime_value
+        type: number
+    measures:
+      - name: count
+        type: count
