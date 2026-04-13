@@ -32,10 +32,10 @@ class Mem0Client:
                 "provider": "chroma",
                 "config": {
                     "collection_name": "nanobot_memory",
-                    "path": str(self._workspace / "mem0_chroma"),
+                    "path": str(self._workspace / "chroma"),
                 },
             },
-            "history_db_path": str(self._workspace / "memories.db"),
+            "history_db_path": str(self._workspace / "chroma.db"),
         }
 
         if self._config.reranker:
