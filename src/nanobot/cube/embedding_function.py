@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import warnings
 from typing import TYPE_CHECKING, List
+
+# Suppress ChromaDB deprecation warnings BEFORE chromadb is imported
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="chromadb.*")
 
 import openai
 from chromadb.api.types import EmbeddingFunction

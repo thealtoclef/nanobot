@@ -86,6 +86,9 @@ ignore = ["E501"]
 [tool.pytest]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning:chromadb.*",
+]
 
 [tool.coverage.run]
 source = ["nanobot"]
