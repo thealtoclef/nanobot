@@ -237,7 +237,7 @@ class TestSchema:
 
             assert "orders" in result
 
-    async def test_reload_stores_schema_hash(self, cube_service, mock_meta_response):
+    async def test_reload_stores_compiler_id(self, cube_service, mock_meta_response):
         with patch.object(cube_service, "_get_client") as mock_get_client:
             mock_response = MagicMock()
             mock_response.status_code = 200
@@ -249,8 +249,7 @@ class TestSchema:
 
             await cube_service.reload()
 
-            assert cube_service._schema_hash is not None
-            assert len(cube_service._schema_hash) == 64  # SHA-256 hex
+            assert cube_service._compiler_id == "test-compiler-id-123"
 
 
 class TestQueryExecution:

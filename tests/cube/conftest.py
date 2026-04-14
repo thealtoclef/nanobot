@@ -42,6 +42,7 @@ def mock_live_ok():
 def mock_meta_response():
     """Mock GET /v1/meta → sample cube schema JSON"""
     return {
+        "compilerId": "test-compiler-id-123",
         "cubes": [
             {
                 "name": "orders",
@@ -91,7 +92,7 @@ def mock_meta_response():
                     },
                 ],
             },
-        ]
+        ],
     }
 
 

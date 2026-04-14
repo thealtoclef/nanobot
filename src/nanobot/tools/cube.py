@@ -2,6 +2,8 @@
 
 from typing import TYPE_CHECKING, Any
 
+from loguru import logger
+
 from nanobot.cube.service import CubeService
 from nanobot.tools.base import Tool
 
@@ -73,7 +75,9 @@ class CubeSchemaTool(Tool):
         if not self._service.is_available:
             return f"Error: Cube is not available: {self._service.init_error}"
 
-        return await self._service.get_schema_context(question=question)
+        result = await self._service.get_schema_context(question=question)
+        logger.debug("cube_schema tool returning {} chars", len(result))
+        return result
 
 
 class CubeQueryTool(Tool):

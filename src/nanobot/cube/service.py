@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -42,7 +41,7 @@ class CubeService:
         self._available: bool = False
         self._init_error: str | None = None
         self._schema: str | None = None
-        self._schema_hash: str | None = None
+        self._compiler_id: str | None = None  # staleness check via /v1/meta compilerId
         self._client: httpx.AsyncClient | None = None
         self._schema_index: Any = None  # set by runner
         self._init_lock: asyncio.Lock = asyncio.Lock()
