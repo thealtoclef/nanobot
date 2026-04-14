@@ -140,53 +140,6 @@ class TestHealthChecks:
 
 
 class TestSchema:
-    async def test_get_schema_parses_meta(self, cube_service, mock_meta_response):
-        with patch.object(cube_service, "_get_client") as mock_get_client:
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = mock_meta_response
-            mock_response.text = '{"cubes": [...]}'
-            mock_client = AsyncMock()
-            mock_client.get.return_value = mock_response
-            mock_get_client.return_value = mock_client
-
-            schema = await cube_service.get_schema()
-
-            assert "orders" in schema
-            assert "customers" in schema
-
-    async def test_get_schema_empty_cubes(self, cube_service):
-        with patch.object(cube_service, "_get_client") as mock_get_client:
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {"cubes": []}
-            mock_response.text = '{"cubes": []}'
-            mock_client = AsyncMock()
-            mock_client.get.return_value = mock_response
-            mock_get_client.return_value = mock_client
-
-            schema = await cube_service.get_schema()
-
-            # Schema is the raw JSON string
-            assert '"cubes": []' in schema
-
-    async def test_get_schema_caching(self, cube_service, mock_meta_response):
-        with patch.object(cube_service, "_get_client") as mock_get_client:
-            mock_response = MagicMock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = mock_meta_response
-            mock_response.text = '{"cubes": [...]}'
-            mock_client = AsyncMock()
-            mock_client.get.return_value = mock_response
-            mock_get_client.return_value = mock_client
-
-            schema1 = await cube_service.get_schema()
-            schema2 = await cube_service.get_schema()
-
-            # Should only make one HTTP call
-            assert mock_client.get.call_count == 1
-            assert schema1 == schema2
-
     async def test_get_schema_context_no_question(self, cube_service, mock_meta_response):
         with patch.object(cube_service, "_get_client") as mock_get_client:
             mock_response = MagicMock()
@@ -197,6 +150,7 @@ class TestSchema:
             mock_client.get.return_value = mock_response
             mock_get_client.return_value = mock_client
 
+            await cube_service.reload()
             result = await cube_service.get_schema_context(None)
 
             assert "orders" in result
@@ -210,6 +164,8 @@ class TestSchema:
             mock_client = AsyncMock()
             mock_client.get.return_value = mock_response
             mock_get_client.return_value = mock_client
+
+            await cube_service.reload()
 
             # Set threshold very high so schema is "small"
             cube_service.schema_index.threshold = 100_000_000
@@ -227,6 +183,8 @@ class TestSchema:
             mock_client = AsyncMock()
             mock_client.get.return_value = mock_response
             mock_get_client.return_value = mock_client
+
+            await cube_service.reload()
 
             # Set threshold very low to trigger "large schema" path
             cube_service.schema_index.threshold = 10

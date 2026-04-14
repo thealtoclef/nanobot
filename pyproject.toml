@@ -45,7 +45,6 @@ dependencies = [
     "pendulum>=3.2.0,<3.3.0",
     "mem0ai>=1.0.11,<1.1.0",
     "chromadb>=1.5.7,<1.6.0",
-    "toons>=0.5.4,<1.0.0",
 ]
 
 [project.optional-dependencies]

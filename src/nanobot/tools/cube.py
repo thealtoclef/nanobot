@@ -138,7 +138,13 @@ class CubeQueryTool(Tool):
         "## Member naming convention\n"
         "All measure and dimension names use the format 'cube_name.member_name' "
         "(e.g. 'orders.count', 'users.email'). Time dimensions can optionally append "
-        "granularity: 'orders.created_at.month'."
+        "granularity: 'orders.created_at.month'.\n\n"
+        "## Error handling\n"
+        "If the query returns an error, read the error message carefully - it often tells "
+        "you exactly what went wrong (e.g., 'Unknown member X', 'fails to match pattern').\n"
+        "- Invalid member name: Check the schema for the correct cube.dimension format\n"
+        "- Query format error: Fix the payload structure per the schema above\n"
+        "- After fixing, retry the query with corrected payload."
     )
 
     parameters = {
@@ -210,6 +216,8 @@ class CubeQueryTool(Tool):
             data = result.get("data", []) if isinstance(result, dict) else result
             return self._service._format_as_markdown_table(data)
         except Exception as e:
+            logger.debug(f"Cube query error: {e}")
+            # Pass error through for LLM to self-correct
             return f"Error: {e}"
 
 
