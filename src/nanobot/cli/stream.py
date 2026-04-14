@@ -107,7 +107,7 @@ class StreamRenderer:
             self._live.refresh()
             self._t = now
 
-    async def on_end(self, *, resuming: bool = False) -> None:
+    async def on_end(self, *, resuming: bool = False, final_content: str = "") -> None:
         if self._live:
             self._live.update(self._render())
             self._live.refresh()
