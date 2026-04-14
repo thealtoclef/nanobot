@@ -677,7 +677,7 @@ class AgentRunner:
                                 OutboundMessage(
                                     channel=channel,
                                     chat_id=chat_id,
-                                    content=f"🔧 Calling {tool_name}...",
+                                    content=f"🔧 Calling {tool_name} ...",
                                     metadata=meta,
                                 )
                             )
