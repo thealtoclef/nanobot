@@ -431,6 +431,8 @@ async def _evaluate_notification(agent: Any, response: str, task_context: str) -
     import json
     import re
 
+    from loguru import logger
+
     prompt = f"""You are a notification gate for a background agent.
 
 ## Original task
@@ -580,6 +582,7 @@ def serve(
         channels_config=runtime_config.channels,
         timezone=runtime_config.agent.timezone,
         memory_config=runtime_config.memory,
+        cube_config=runtime_config.cube,
     )
 
     model_name = runtime_config.agent.models[0].name if runtime_config.agent.models else "unknown"
@@ -669,6 +672,7 @@ def gateway(
         channels_config=config.channels,
         timezone=config.agent.timezone,
         memory_config=config.memory,
+        cube_config=config.cube,
     )
 
     # Set cron callback (needs agent)
@@ -888,6 +892,7 @@ def agent(
         channels_config=config.channels,
         timezone=config.agent.timezone,
         memory_config=config.memory,
+        cube_config=config.cube,
     )
     restart_notice = consume_restart_notice_from_env()
     if restart_notice and should_show_cli_restart_notice(restart_notice, session_id):

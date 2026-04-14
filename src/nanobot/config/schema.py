@@ -249,6 +249,64 @@ class MemoryConfig(Base):
         return result
 
 
+class EmbedderConfig(Base):
+    """Embedding model configuration for semantic search in Cube."""
+
+    provider: ProviderConfig = Field(
+        default_factory=lambda: ProviderConfig(
+            backend="openai",
+            base_url="https://api.openai.com",
+        )
+    )
+    model: str = "text-embedding-3-small"
+
+
+class RerankerConfig(Base):
+    """Reranker model configuration for refining semantic search results."""
+
+    provider: ProviderConfig = Field(
+        default_factory=lambda: ProviderConfig(
+            backend="openai",
+            base_url="https://api.openai.com",
+        )
+    )
+    model: str = "gpt-5"
+
+
+class CubeSchemaIndexConfig(Base):
+    """Configuration for Cube schema index used in semantic layer."""
+
+    enabled: bool = True
+    threshold: int = 30_000
+    max_results: int = 10
+    embedder: EmbedderConfig = Field(default_factory=EmbedderConfig)
+    reranker: RerankerConfig | None = None
+
+
+class CubeMemoryConfig(Base):
+    """Configuration for Cube memory layer in semantic layer."""
+
+    enabled: bool = True
+    max_results: int = 5
+    embedder: EmbedderConfig = Field(default_factory=EmbedderConfig)
+    reranker: RerankerConfig | None = None
+
+
+class CubeConfig(Base):
+    """Cube semantic layer configuration."""
+
+    enabled: bool = False
+    cube_url: str = ""
+    token: str = ""
+    cubejs_api_path: str = "/cubejs-api"
+    timeout: float = 30.0
+    request_span_enabled: bool = True
+    continue_wait_retry_interval: float = 1.0
+    continue_wait_retry_max_attempts: int = 5
+    memory: CubeMemoryConfig = Field(default_factory=CubeMemoryConfig)
+    schema_index: CubeSchemaIndexConfig = Field(default_factory=CubeSchemaIndexConfig)
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -260,6 +318,7 @@ class Config(BaseSettings):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    cube: CubeConfig = Field(default_factory=CubeConfig)
 
     @property
     def workspace_path(self) -> Path:
