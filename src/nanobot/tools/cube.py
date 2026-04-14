@@ -6,7 +6,7 @@ from nanobot.cube.service import CubeService
 from nanobot.tools.base import Tool
 
 if TYPE_CHECKING:
-    from nanobot.cube.sql_memory import SqlMemory
+    from nanobot.cube.query_memory import QueryMemory
 
 
 def _generate_span_id() -> str:
@@ -172,9 +172,9 @@ class CubeQueryTool(Tool):
         "required": ["payload"],
     }
 
-    def __init__(self, service: "CubeService", sql_memory: "SqlMemory | None" = None) -> None:
+    def __init__(self, service: "CubeService", query_memory: "QueryMemory | None" = None) -> None:
         self._service = service
-        self._sql_memory = sql_memory
+        self._query_memory = query_memory
 
     async def execute(
         self,
@@ -198,10 +198,10 @@ class CubeQueryTool(Tool):
         try:
             result = await self._service.execute_query(payload, span_id=span_id)
             # Success — save to history (only if memory is enabled and question provided)
-            if question and self._sql_memory and self._sql_memory.is_available:
+            if question and self._query_memory and self._query_memory.is_available:
                 import json
 
-                await self._sql_memory.store(question, json.dumps(payload))
+                await self._query_memory.store(question, json.dumps(payload))
             # Cube /v1/load returns {"data": [...]} or similar structure
             data = result.get("data", []) if isinstance(result, dict) else result
             return self._service._format_as_markdown_table(data)
@@ -257,14 +257,14 @@ class CubeSearchTool(Tool):
         "required": ["question"],
     }
 
-    def __init__(self, sql_memory: "SqlMemory") -> None:
-        self._sql_memory = sql_memory
+    def __init__(self, query_memory: "QueryMemory") -> None:
+        self._query_memory = query_memory
 
     async def execute(self, question: str, limit: int = 5, **kwargs: Any) -> str:
-        if not self._sql_memory or not self._sql_memory.is_available:
+        if not self._query_memory or not self._query_memory.is_available:
             return "Error: Cube query history is not available."
 
-        pairs = await self._sql_memory.search(question, limit=limit)
+        pairs = await self._query_memory.search(question, limit=limit)
 
         if not pairs:
             return "No similar queries found."

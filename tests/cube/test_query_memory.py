@@ -1,4 +1,4 @@
-"""Tests for SqlMemory."""
+"""Tests for QueryMemory."""
 
 import tempfile
 from pathlib import Path
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from nanobot.config.schema import CubeMemoryConfig, EmbedderConfig, ProviderConfig
-from nanobot.cube.sql_memory import SqlMemory
+from nanobot.cube.query_memory import QueryMemory
 
 
 @pytest.fixture
@@ -33,10 +33,10 @@ def temp_dir():
         yield Path(tmpdir)
 
 
-class TestSqlMemoryInit:
+class TestQueryMemoryInit:
     def test_directory_created(self, memory_config, temp_dir):
         with patch("chromadb.PersistentClient") as mock_chroma:
-            memory = SqlMemory(
+            memory = QueryMemory(
                 persist_dir=temp_dir / "chroma",
                 max_results=memory_config.max_results,
                 embedder=memory_config.embedder,
@@ -51,7 +51,7 @@ class TestSqlMemoryInit:
             mock_collection = MagicMock()
             mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
-            memory = SqlMemory(
+            memory = QueryMemory(
                 persist_dir=temp_dir / "chroma",
                 max_results=memory_config.max_results,
                 embedder=memory_config.embedder,
@@ -62,14 +62,14 @@ class TestSqlMemoryInit:
             assert memory.is_available is True
 
 
-class TestSqlMemoryStore:
+class TestQueryMemoryStore:
     @pytest.mark.asyncio
     async def test_store_question_payload(self, memory_config, temp_dir):
         with patch("chromadb.PersistentClient") as mock_chroma:
             mock_collection = MagicMock()
             mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
-            memory = SqlMemory(
+            memory = QueryMemory(
                 persist_dir=temp_dir / "chroma",
                 max_results=memory_config.max_results,
                 embedder=memory_config.embedder,
@@ -91,7 +91,7 @@ class TestSqlMemoryStore:
             mock_collection = MagicMock()
             mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
-            memory = SqlMemory(
+            memory = QueryMemory(
                 persist_dir=temp_dir / "chroma",
                 max_results=memory_config.max_results,
                 embedder=memory_config.embedder,
@@ -110,7 +110,7 @@ class TestSqlMemoryStore:
             mock_collection = MagicMock()
             mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
-            memory = SqlMemory(
+            memory = QueryMemory(
                 persist_dir=temp_dir / "chroma",
                 max_results=memory_config.max_results,
                 embedder=memory_config.embedder,
@@ -125,7 +125,7 @@ class TestSqlMemoryStore:
             mock_collection.add.assert_called_once()
 
 
-class TestSqlMemorySearch:
+class TestQueryMemorySearch:
     @pytest.mark.asyncio
     async def test_search_returns_results(self, memory_config, temp_dir):
         with patch("chromadb.PersistentClient") as mock_chroma:
@@ -137,7 +137,7 @@ class TestSqlMemorySearch:
             }
             mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
-            memory = SqlMemory(
+            memory = QueryMemory(
                 persist_dir=temp_dir / "chroma",
                 max_results=memory_config.max_results,
                 embedder=memory_config.embedder,
@@ -162,7 +162,7 @@ class TestSqlMemorySearch:
             }
             mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
-            memory = SqlMemory(
+            memory = QueryMemory(
                 persist_dir=temp_dir / "chroma",
                 max_results=memory_config.max_results,
                 embedder=memory_config.embedder,
@@ -189,7 +189,7 @@ class TestSqlMemorySearch:
             }
             mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
-            memory = SqlMemory(
+            memory = QueryMemory(
                 persist_dir=temp_dir / "chroma",
                 max_results=memory_config.max_results,
                 embedder=memory_config.embedder,
@@ -201,14 +201,14 @@ class TestSqlMemorySearch:
             assert len(results) == 0
 
 
-class TestSqlMemoryClear:
+class TestQueryMemoryClear:
     @pytest.mark.asyncio
     async def test_clear_all(self, memory_config, temp_dir):
         with patch("chromadb.PersistentClient") as mock_chroma:
             mock_collection = MagicMock()
             mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
-            memory = SqlMemory(
+            memory = QueryMemory(
                 persist_dir=temp_dir / "chroma",
                 max_results=memory_config.max_results,
                 embedder=memory_config.embedder,
@@ -229,7 +229,7 @@ class TestSqlMemoryClear:
             mock_collection = MagicMock()
             mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
 
-            memory = SqlMemory(
+            memory = QueryMemory(
                 persist_dir=temp_dir / "chroma",
                 max_results=memory_config.max_results,
                 embedder=memory_config.embedder,
@@ -240,9 +240,9 @@ class TestSqlMemoryClear:
             await memory.clear()  # Should not raise
 
 
-class TestSqlMemoryAvailable:
+class TestQueryMemoryAvailable:
     def test_unavailable_when_collection_none(self, temp_dir):
-        memory = SqlMemory(
+        memory = QueryMemory(
             persist_dir=temp_dir / "chroma",
             max_results=5,
             embedder=None,

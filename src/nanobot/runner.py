@@ -7,7 +7,6 @@ execution to NanobotAgent (pydanticAI-based).
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from contextlib import AsyncExitStack, nullcontext
 from dataclasses import dataclass
@@ -25,7 +24,6 @@ from nanobot.command.router import CommandRouter
 from nanobot.context import ContextBuilder
 from nanobot.db import Database
 from nanobot.memory.compressor import HistoryCompressor
-
 from nanobot.session import SessionManager
 from nanobot.skill_loader import BUILTIN_SKILLS_DIR
 from nanobot.tools.cron import CronTool
@@ -39,6 +37,7 @@ from nanobot.tools.web import WebFetchTool, WebSearchTool
 if TYPE_CHECKING:
     from nanobot.config.schema import (
         ChannelsConfig,
+        CubeConfig,
         ExecToolConfig,
         MCPServerConfig,
         MemoryConfig,
@@ -89,6 +88,7 @@ class AgentRunner:
         timezone: str = "UTC",
         skills_directories: list[Path] | None = None,
         memory_config: MemoryConfig | None = None,
+        cube_config: CubeConfig | None = None,
         **kwargs: Any,
     ) -> None:
         from nanobot.config.schema import ExecToolConfig as ExecCfg
@@ -126,6 +126,43 @@ class AgentRunner:
             from nanobot.memory.mem0_client import Mem0Client
 
             self._mem0 = Mem0Client(memory_config, workspace)
+
+        # Cube semantic layer
+        self._cube_service: Any = None
+        self._cube_memory: Any = None
+        self._cube_schema_index: Any = None
+        if cube_config and cube_config.enabled:
+            from nanobot.cube.service import CubeService
+
+            self._cube_service = CubeService(cube_config)
+            # initialize() is async — deferred to first tool use (matches Mem0Client pattern)
+
+            if cube_config.memory.enabled:
+                from nanobot.cube.query_memory import QueryMemory
+
+                persist_path = workspace / "chroma"
+
+                self._cube_memory = QueryMemory(
+                    persist_dir=persist_path,
+                    max_results=cube_config.memory.max_results,
+                    embedder=cube_config.memory.embedder,
+                    reranker=cube_config.memory.reranker,
+                )
+                self._cube_memory.initialize()
+
+                # Schema index uses the same ChromaDB directory ({workspace}/chroma/)
+                # with its own embedder/reranker (can differ from memory's)
+                # Set _schema_index directly before tools use it (health check still deferred to first tool use)
+                if cube_config.schema_index.enabled:
+                    from nanobot.cube.schema_index import CubeSchemaIndex
+
+                    self._cube_schema_index = CubeSchemaIndex(
+                        persist_dir=persist_path,
+                        embedder=cube_config.schema_index.embedder,
+                        reranker=cube_config.schema_index.reranker,
+                    )
+                    self._cube_schema_index.initialize()
+                    self._cube_service._schema_index = self._cube_schema_index
 
         # NanobotAgent (pydanticAI-based)
         self.agent = TalkerAgent(
@@ -226,6 +263,15 @@ class AgentRunner:
             self.tools.register(
                 CronTool(self.cron_service, default_timezone=self.context.timezone or "UTC")
             )
+
+        # Register Cube tools (always register if config enabled — lazy init in tools)
+        if self._cube_service:
+            from nanobot.tools.cube import CubeQueryTool, CubeSchemaTool, CubeSearchTool
+
+            self.tools.register(CubeSchemaTool(self._cube_service))
+            self.tools.register(CubeQueryTool(self._cube_service, self._cube_memory))
+            if self._cube_memory and self._cube_memory.is_available:
+                self.tools.register(CubeSearchTool(self._cube_memory))
 
         # Register tools on the NanobotAgent
         for name, tool in self.tools._tools.items():
@@ -644,17 +690,21 @@ class AgentRunner:
         # 3. Cancel background subagent tasks
         await self.subagents.cancel_all()
 
-        # 4. Drain mem0 ingest tasks
+        # 4. Close Cube service
+        if self._cube_service:
+            await self._cube_service.close()
+
+        # 5. Drain mem0 ingest tasks
         if self.history_compressor:
             await self.history_compressor.close()
 
-        # 5. Close MCP connections
+        # 6. Close MCP connections
         await self.close_mcp()
 
-        # 5. Dispose SQLAlchemy engine
+        # 7. Dispose SQLAlchemy engine
         self.db.engine.dispose()
 
-        # 6. Drain inbound queue so messages are not silently dropped
+        # 8. Drain inbound queue so messages are not silently dropped
         drained = 0
         while not self.bus.inbound.empty():
             try:

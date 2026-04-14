@@ -11,8 +11,8 @@ from nanobot.config.schema import (
     EmbedderConfig,
     ProviderConfig,
 )
+from nanobot.cube.query_memory import QueryMemory
 from nanobot.cube.service import CubeService
-from nanobot.cube.sql_memory import SqlMemory
 from nanobot.tools.cube import CubeQueryTool, CubeSchemaTool, CubeSearchTool, _generate_span_id
 
 
@@ -152,7 +152,7 @@ class TestCubeQueryTool:
     @pytest.mark.asyncio
     async def test_auto_save_on_success(self, cube_service):
         # Create a mock memory
-        memory = MagicMock(spec=SqlMemory)
+        memory = MagicMock(spec=QueryMemory)
         memory.is_available = True
         memory.store = AsyncMock()
 
@@ -172,7 +172,7 @@ class TestCubeQueryTool:
 
     @pytest.mark.asyncio
     async def test_no_save_without_question(self, cube_service):
-        memory = MagicMock(spec=SqlMemory)
+        memory = MagicMock(spec=QueryMemory)
         memory.is_available = True
         memory.store = AsyncMock()
 
@@ -192,7 +192,7 @@ class TestCubeQueryTool:
 
     @pytest.mark.asyncio
     async def test_no_save_on_error(self, cube_service):
-        memory = MagicMock(spec=SqlMemory)
+        memory = MagicMock(spec=QueryMemory)
         memory.is_available = True
         memory.store = AsyncMock()
 
@@ -212,7 +212,7 @@ class TestCubeQueryTool:
 class TestCubeSearchTool:
     @pytest.mark.asyncio
     async def test_returns_formatted_results(self):
-        memory = MagicMock(spec=SqlMemory)
+        memory = MagicMock(spec=QueryMemory)
         memory.is_available = True
         memory.search = AsyncMock()
         memory.search.return_value = [
@@ -228,7 +228,7 @@ class TestCubeSearchTool:
 
     @pytest.mark.asyncio
     async def test_no_results_message(self):
-        memory = MagicMock(spec=SqlMemory)
+        memory = MagicMock(spec=QueryMemory)
         memory.is_available = True
         memory.search = AsyncMock()
         memory.search.return_value = []
@@ -241,7 +241,7 @@ class TestCubeSearchTool:
 
     @pytest.mark.asyncio
     async def test_unavailable_memory(self):
-        memory = MagicMock(spec=SqlMemory)
+        memory = MagicMock(spec=QueryMemory)
         memory.is_available = False
 
         tool = CubeSearchTool(memory)
