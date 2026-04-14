@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 
 import openai
-from chromadb.api.types import Embeddings
+from chromadb.api.types import EmbeddingFunction
 
 if TYPE_CHECKING:
     from nanobot.config.schema import EmbedderConfig
 
 
-class CubeEmbeddingFunction(Embeddings):
-    """Adapter bridging nanobot EmbedderConfig to ChromaDB's Embeddings protocol.
+class CubeEmbeddingFunction(EmbeddingFunction[List[str]]):
+    """Adapter bridging nanobot EmbedderConfig to ChromaDB's EmbeddingFunction protocol.
 
     Supports OpenAI-compatible backends via base_url.
     """
 
-    def __init__(self, config: EmbedderConfig) -> None:
+    def __init__(self, config: "EmbedderConfig") -> None:
         self.config = config
         self._client: "openai.AsyncOpenAI | None" = None
 
@@ -28,13 +28,29 @@ class CubeEmbeddingFunction(Embeddings):
             )
         return self._client
 
-    def embed_documents(self, input: list[str]) -> list[list[float]]:
+    def __call__(self, input: List[str]) -> List[List[float]]:
+        """Embed a list of texts. Required by ChromaDB EmbeddingFunction protocol."""
         return asyncio.run(self._embed_async(input))
 
-    def embed_query(self, query: str) -> list[float]:
-        return asyncio.run(self._embed_async([query]))[0]
+    @staticmethod
+    def name() -> str:
+        """Return embedding function name for ChromaDB compatibility."""
+        return "cube-embedder"
 
-    async def _embed_async(self, texts: list[str]) -> list[list[float]]:
+    @staticmethod
+    def build_from_config(config: dict) -> "CubeEmbeddingFunction":
+        """Build embedding function from serialized config."""
+        raise NotImplementedError("CubeEmbeddingFunction cannot be rebuilt from config alone")
+
+    def get_config(self) -> dict:
+        """Return configuration dict for ChromaDB persistence."""
+        return {
+            "name": self.name(),
+            "model": self.config.model,
+            "provider": self.config.provider.backend,
+        }
+
+    async def _embed_async(self, texts: List[str]) -> List[List[float]]:
         if self.config.provider.backend != "openai":
             raise ValueError(
                 f"Unsupported embedding backend: {self.config.provider.backend}. Only 'openai' backend is supported."

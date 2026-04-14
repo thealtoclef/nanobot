@@ -36,11 +36,16 @@ class QueryMemory:
     def initialize(self) -> None:
         """Setup ChromaDB with CubeEmbeddingFunction, create collection."""
         import chromadb
+        from chromadb.config import Settings
 
         from nanobot.cube.embedding_function import CubeEmbeddingFunction
 
         self.persist_dir.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(self.persist_dir))
+        settings = Settings(is_persistent=True, anonymized_telemetry=False)
+        self._client = chromadb.PersistentClient(
+            path=str(self.persist_dir),
+            settings=settings,
+        )
         ef = CubeEmbeddingFunction(config=self.embedder) if self.embedder else None
         self._collection = self._client.get_or_create_collection(
             name="cube_memory",

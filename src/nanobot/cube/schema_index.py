@@ -36,11 +36,16 @@ class CubeSchemaIndex:
     def initialize(self) -> None:
         """Setup ChromaDB with CubeEmbeddingFunction, create cube_schema collection."""
         import chromadb
+        from chromadb.config import Settings
 
         from nanobot.cube.embedding_function import CubeEmbeddingFunction
 
         self.persist_dir.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(self.persist_dir))
+        settings = Settings(is_persistent=True, anonymized_telemetry=False)
+        self._client = chromadb.PersistentClient(
+            path=str(self.persist_dir),
+            settings=settings,
+        )
         ef = CubeEmbeddingFunction(config=self.embedder) if self.embedder else None
         self._collection = self._client.get_or_create_collection(
             name="cube_schema",
@@ -65,7 +70,9 @@ class CubeSchemaIndex:
 
         def _sync_index():
             # Clear existing records (full rebuild)
-            self._collection.delete(where={})
+            existing = self._collection.get()
+            if existing and existing.get("ids"):
+                self._collection.delete(ids=existing["ids"])
 
             # Index each cube as a separate record
             for cube in cubes:

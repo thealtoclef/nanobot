@@ -8,7 +8,9 @@ These tests use the existing fixtures at tests/e2e/cube/fixtures/
 
 import pytest
 
-from nanobot.config.schema import CubeConfig
+from nanobot.config.schema import CubeConfig, EmbedderConfig, ProviderConfig
+from nanobot.cube.query_memory import QueryMemory
+from nanobot.cube.schema_index import CubeSchemaIndex
 from nanobot.cube.service import CubeService
 
 
@@ -109,3 +111,168 @@ class TestCubeE2E:
         # Should contain either full schema or search results
         assert isinstance(result, str)
         assert len(result) > 0
+
+
+class TestChromaDBE2E:
+    """End-to-end tests for ChromaDB local integration with Cube components.
+
+    Tests that our CubeEmbeddingFunction works correctly with ChromaDB's
+    PersistentClient (local mode, not remote server).
+    """
+
+    def test_chroma_query_memory_integration(self):
+        """Test QueryMemory can be initialized and used with ChromaDB.
+
+        This catches issues with CubeEmbeddingFunction missing required
+        methods like name(), is_legacy(), default_space(), etc.
+        """
+        import tempfile
+        from pathlib import Path
+
+        # Create a temporary directory for ChromaDB persistence
+        with tempfile.TemporaryDirectory() as tmpdir:
+            persist_path = Path(tmpdir) / "chroma"
+
+            # Create embedder config with a valid-looking provider
+            embedder_cfg = EmbedderConfig(
+                provider=ProviderConfig(
+                    backend="openai",
+                    base_url="https://api.openai.com",
+                    api_key="test-key",  # Won't actually be called in this test
+                ),
+                model="text-embedding-3-small",
+            )
+
+            # Initialize QueryMemory - this will fail if CubeEmbeddingFunction
+            # doesn't have the required ChromaDB protocol methods
+            memory = QueryMemory(
+                persist_dir=persist_path,
+                max_results=5,
+                embedder=embedder_cfg,
+                reranker=None,
+            )
+            memory.initialize()
+
+            # Verify it's available
+            assert memory.is_available is True
+
+            # Verify collection was created with correct name
+            assert memory._collection is not None
+
+    def test_chroma_schema_index_integration(self):
+        """Test CubeSchemaIndex can be initialized with ChromaDB.
+
+        This catches issues with CubeEmbeddingFunction missing required
+        methods like name(), is_legacy(), default_space(), etc.
+        """
+        import tempfile
+        from pathlib import Path
+
+        # Create a temporary directory for ChromaDB persistence
+        with tempfile.TemporaryDirectory() as tmpdir:
+            persist_path = Path(tmpdir) / "chroma"
+
+            # Create embedder config with a valid-looking provider
+            embedder_cfg = EmbedderConfig(
+                provider=ProviderConfig(
+                    backend="openai",
+                    base_url="https://api.openai.com",
+                    api_key="test-key",  # Won't actually be called in this test
+                ),
+                model="text-embedding-3-small",
+            )
+
+            # Initialize CubeSchemaIndex - this will fail if CubeEmbeddingFunction
+            # doesn't have the required ChromaDB protocol methods
+            index = CubeSchemaIndex(
+                persist_dir=persist_path,
+                max_results=10,
+                embedder=embedder_cfg,
+                reranker=None,
+            )
+            index.initialize()
+
+            # Verify it's available
+            assert index.is_available is True
+
+            # Verify collection was created with correct name
+            assert index._collection is not None
+
+    def test_chroma_schema_index_index_and_search(self):
+        """Test CubeSchemaIndex can index cubes and search for relevant ones.
+
+        This tests the full index + search flow with simulated cube meta data.
+        Note: This test requires a valid OpenAI API key since it performs real embeddings.
+        Skipped unless OPENAI_API_KEY is set.
+        """
+        import asyncio
+
+        # Skip if no real API key available
+        import os
+        import tempfile
+        from pathlib import Path
+
+        if not os.getenv("OPENAI_API_KEY"):
+            pytest.skip(
+                "OPENAI_API_KEY not set - skipping integration test that requires real API calls"
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            persist_path = Path(tmpdir) / "chroma"
+
+            # Create embedder config with real API key
+            embedder_cfg = EmbedderConfig(
+                provider=ProviderConfig(
+                    backend="openai",
+                    base_url="https://api.openai.com",
+                    api_key=os.getenv("OPENAI_API_KEY", ""),
+                ),
+                model="text-embedding-3-small",
+            )
+
+            # Initialize CubeSchemaIndex
+            index = CubeSchemaIndex(
+                persist_dir=persist_path,
+                max_results=10,
+                embedder=embedder_cfg,
+                reranker=None,
+            )
+            index.initialize()
+
+            # Simulated cube meta response (similar to what Cube /v1/meta returns)
+            cubes = [
+                {
+                    "name": "orders",
+                    "title": "Orders",
+                    "dimensions": [
+                        {"name": "orders.status", "type": "string"},
+                        {"name": "orders.customer_name", "type": "string"},
+                    ],
+                    "measures": [
+                        {"name": "orders.count", "type": "number"},
+                    ],
+                },
+                {
+                    "name": "customers",
+                    "title": "Customers",
+                    "dimensions": [
+                        {"name": "customers.city", "type": "string"},
+                        {"name": "customers.age", "type": "number"},
+                    ],
+                    "measures": [
+                        {"name": "customers.count", "type": "number"},
+                    ],
+                },
+            ]
+
+            # Index the cubes (this converts to TOON and stores in ChromaDB)
+            asyncio.run(index.index_cubes(cubes))
+
+            # Search for "orders" related cubes
+            results = asyncio.run(index.search("How many orders by status?"))
+            assert len(results) > 0
+
+            # First result should be about orders
+            text, metadata, score = results[0]
+            assert "orders" in metadata.get("cube_name", "")
+            assert score > 0.0
