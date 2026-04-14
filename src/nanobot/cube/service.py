@@ -145,7 +145,7 @@ class CubeService:
         return "\n".join(lines)
 
     async def reload(self) -> None:
-        """Reload the schema from Cube API."""
+        """Reload the schema from Cube API if stale (compilerId changed)."""
         try:
             client = self._get_client()
             headers = self._auth_headers()
@@ -156,21 +156,26 @@ class CubeService:
             response.raise_for_status()
             data = response.json()
 
-            # Store schema as TOON (lossless compact format) with hash
+            # Check staleness via compilerId
+            new_compiler_id = data.get("compilerId")
+            if new_compiler_id and new_compiler_id == self._compiler_id:
+                return
+
+            # Store schema as TOON (lossless compact format)
             cubes = data.get("cubes", [])
             raw_json = json.dumps(data, sort_keys=True)
-            self._schema_hash = hashlib.sha256(raw_json.encode()).hexdigest()
             self._schema = self._to_toon(cubes) if cubes else raw_json
+            self._compiler_id = new_compiler_id
 
             # Re-index if schema_index is available
             if self._schema_index is not None:
                 cubes = data.get("cubes", [])
-                await self._schema_index.index(cubes)
+                await self._schema_index.index_cubes(cubes)
 
         except Exception as e:
             logger.error(f"Failed to reload Cube schema: {e}")
             self._schema = ""
-            self._schema_hash = None
+            self._compiler_id = None
             raise
 
     async def execute_query(

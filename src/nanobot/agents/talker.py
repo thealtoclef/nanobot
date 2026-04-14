@@ -191,6 +191,7 @@ class TalkerAgent:
             tools=self._tools if self._tools is not None else None,
             retries=retries,
             tool_timeout=tool_timeout,
+            end_strategy="exhaustive",
         )
 
         # Register memory tool after agent is created (needs self._agent)
@@ -278,22 +279,29 @@ class TalkerAgent:
         *,
         message_history: list[ModelMessage] | None = None,
         deps: AgentDeps | None = None,
+        event_stream_handler: Any | None = None,
     ):
-        """Streaming variant — returns an async context manager with stream_text(delta=True).
+        """Streaming variant — supports both stream_text(delta=True) and event_stream_handler.
 
         After the context manager exits, ``result.new_messages()`` contains
         all messages generated during the stream run.
 
-        Usage:
+        Usage (text deltas):
             async with agent.run_stream(...) as result:
                 async for delta in result.stream_text(delta=True):
                     print(delta)
+            new_msgs = result.new_messages()
+
+        Usage (event handler):
+            async with agent.run_stream(..., event_stream_handler=handler) as result:
+                pass  # handler processes events
             new_msgs = result.new_messages()
         """
         return self._agent.run_stream(
             user_message,
             message_history=message_history,
             deps=deps,
+            event_stream_handler=event_stream_handler,
         )
 
 

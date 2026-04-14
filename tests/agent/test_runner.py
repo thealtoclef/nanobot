@@ -3,26 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from pydantic_ai.messages import (
+    ModelMessage,
     ModelRequest,
     ModelResponse,
     SystemPromptPart,
     TextPart,
-    UserPromptPart,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 
-from nanobot.runner import AgentRunner
 from nanobot.bus.queue import MessageBus
-from nanobot.session import SessionManager, Session
-from pydantic_ai.messages import ModelMessage
+from nanobot.runner import AgentRunner
+from nanobot.session import SessionManager
 
 
 def _make_runner(tmp_path: Path, sessions: SessionManager) -> AgentRunner:
@@ -244,7 +242,7 @@ class TestRunAgentLoopNoDuplication:
             for p in msg.parts
             if isinstance(p, UserPromptPart)
         ]
-        assert len(user_parts) == 0, f"UserPromptPart found in message_history — duplication!"
+        assert len(user_parts) == 0, "UserPromptPart found in message_history — duplication!"
 
     @pytest.mark.asyncio
     async def test_non_streaming_passes_correct_user_content(self, tmp_path: Path) -> None:
@@ -298,7 +296,9 @@ class TestRunAgentLoopNoDuplication:
             async def stream_text(self, delta=True):
                 yield "chunk"
 
-        def fake_run_stream(user_message, message_history=None, deps=None):
+        def fake_run_stream(
+            user_message, message_history=None, deps=None, event_stream_handler=None
+        ):
             captured["user_message"] = user_message
             captured["message_history"] = message_history or []
             return FakeStreamResult()

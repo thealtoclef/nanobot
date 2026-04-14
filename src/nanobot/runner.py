@@ -33,6 +33,7 @@ from nanobot.tools.registry import ToolRegistry
 from nanobot.tools.shell import ExecTool
 from nanobot.tools.spawn import SpawnTool
 from nanobot.tools.web import WebFetchTool, WebSearchTool
+from nanobot.utils.helpers import strip_think
 
 if TYPE_CHECKING:
     from nanobot.config.schema import (
@@ -213,6 +214,7 @@ class AgentRunner:
         self._running = False
         self._active_tasks: dict[str, list[asyncio.Task]] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._concurrency_gate: asyncio.Semaphore | None = None  # cross-session concurrency
         self._checkpoints: dict[str, dict[str, Any]] = {}
 
         # Command router
@@ -413,7 +415,9 @@ class AgentRunner:
                             )
                         )
 
-                    async def on_stream_end(*, resuming: bool = False) -> None:
+                    async def on_stream_end(
+                        *, resuming: bool = False, final_content: str = ""
+                    ) -> None:
                         nonlocal stream_segment
                         meta = dict(msg.metadata or {})
                         meta["_stream_end"] = True
@@ -423,7 +427,7 @@ class AgentRunner:
                             OutboundMessage(
                                 channel=msg.channel,
                                 chat_id=msg.chat_id,
-                                content="",
+                                content=final_content,
                                 metadata=meta,
                             )
                         )
@@ -561,6 +565,7 @@ class AgentRunner:
             channel=msg.channel,
             chat_id=msg.chat_id,
             message_id=msg.metadata.get("message_id"),
+            metadata=msg.metadata,
             on_progress=on_progress or _bus_progress,
             on_stream=on_stream,
             on_stream_end=on_stream_end,
@@ -599,6 +604,7 @@ class AgentRunner:
         channel: str = "cli",
         chat_id: str = "direct",
         message_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         on_stream: Callable[[str], Awaitable[None]] | None = None,
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
@@ -626,18 +632,69 @@ class AgentRunner:
                 mem0_client=self._mem0,
             )
 
+        msg_meta = metadata or {}
+
         if on_stream is not None:
+            stream_buf = ""
+            # Track tool calls for "Calling..." display
+            tool_calls_published: set[str] = set()
+
+            # Import Pydantic AI event types here to avoid top-level dependency
+            from pydantic_ai.messages import (
+                FunctionToolCallEvent,
+                PartDeltaEvent,
+                TextPartDelta,
+            )
+
+            async def _event_handler(
+                ctx: Any,
+                event_stream: Any,
+            ) -> None:
+                nonlocal stream_buf
+                async for event in event_stream:
+                    # Handle text deltas
+                    if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                        delta = event.delta.content_delta
+                        if delta:
+                            prev_clean = strip_think(stream_buf)
+                            stream_buf += delta
+                            new_clean = strip_think(stream_buf)
+                            incremental = new_clean[len(prev_clean) :]
+                            if incremental:
+                                await on_stream(incremental)
+                    # Handle tool call start — announce what's being called
+                    # The actual result will be sent via MessageTool.send_callback
+                    elif isinstance(event, FunctionToolCallEvent):
+                        tool_name = event.part.tool_name
+                        tool_call_id = getattr(event.part, "tool_call_id", None) or ""
+                        key = f"call:{tool_call_id}"
+                        if key not in tool_calls_published:
+                            tool_calls_published.add(key)
+                            meta = dict(msg_meta)
+                            meta["_tool_call"] = True
+                            meta["_tool_name"] = tool_name
+                            await self.bus.publish_outbound(
+                                OutboundMessage(
+                                    channel=channel,
+                                    chat_id=chat_id,
+                                    content=f"🔧 Calling {tool_name}...",
+                                    metadata=meta,
+                                )
+                            )
+
             async with self.agent.run_stream(
                 prompt,
                 message_history=model_messages,
                 deps=deps,
+                event_stream_handler=_event_handler,
             ) as result:
-                async for delta in result.stream_text(delta=True):
-                    if delta and on_stream:
-                        await on_stream(delta)
-            if on_stream_end:
-                await on_stream_end(resuming=False)
+                # Exhaust the stream so event_handler processes all events
+                async for _ in result.stream_text(delta=True):
+                    pass
             output = result.response.text if result.response.text is not None else ""
+            output = strip_think(output)
+            if on_stream_end:
+                await on_stream_end(resuming=False, final_content=output)
             return output, result.new_messages()
         else:
             output, new_messages = await self.agent.run(
@@ -645,6 +702,7 @@ class AgentRunner:
                 message_history=model_messages,
                 deps=deps,
             )
+            output = strip_think(output) if output else ""
             return output, new_messages
 
     def _cleanup_task(self, task: asyncio.Task) -> None:
