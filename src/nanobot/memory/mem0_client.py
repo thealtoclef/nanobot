@@ -31,11 +31,11 @@ class Mem0Client:
             "vector_store": {
                 "provider": "chroma",
                 "config": {
-                    "collection_name": "nanobot_memory",
+                    "collection_name": "mem0",
                     "path": str(self._workspace / "chroma"),
                 },
             },
-            "history_db_path": str(self._workspace / "chroma.db"),
+            "history_db_path": str(self._workspace / "mem0.db"),
         }
 
         if self._config.reranker:

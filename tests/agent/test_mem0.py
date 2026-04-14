@@ -53,8 +53,8 @@ class TestMem0ClientConfig:
         assert mem0_config["version"] == "v1.1"
         assert mem0_config["vector_store"]["provider"] == "chroma"
         assert mem0_config["vector_store"]["config"]["path"] == str(tmp_path / "chroma")
-        assert mem0_config["vector_store"]["config"]["collection_name"] == "nanobot_memory"
-        assert mem0_config["history_db_path"] == str(tmp_path / "chroma.db")
+        assert mem0_config["vector_store"]["config"]["collection_name"] == "mem0"
+        assert mem0_config["history_db_path"] == str(tmp_path / "mem0.db")
         assert mem0_config["llm"] == {}
         assert mem0_config["embedder"] == {}
         assert "reranker" not in mem0_config
